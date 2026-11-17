@@ -6,7 +6,7 @@ import math
 import time
 
 from . import theme as T
-from .maps_ui import _in
+from .ui_kit import _in, glass, progress, spring
 from ..render.overlay import make_texture
 
 CARD_W, CARD_H = 380.0, 100.0
@@ -99,41 +99,42 @@ class NowPlayingPanel:
         ax, ay, aw, ah = layout["art"]
         tx, _, tw, _ = layout["text"]
         now = getattr(ui, "now", time.time())
-        ui.container(x, y, cw, ch, "panel", r=T.R_PANEL)
+
+        glass(ui, x, y, cw, ch, 22, "hud")
 
         # cover ----------------------------------------------------------------
         tex = self._ensure_art(ui, snap.art, int(round(aw * getattr(ui, "scale", 1.0))))
         if tex is not None:
-            ui.image(tex, ax, ay, aw, ah, radius=10.0)
-            ui.box(ax, ay, aw, ah, 10.0, fill=None, border=T.BORDER_SOFT, bw=1.0)
+            ui.image(tex, ax, ay, aw, ah, radius=12.0)
+            ui.box(ax, ay, aw, ah, 12.0, fill=None, border=T.BORDER_SUBTLE, bw=1.0)
         else:
-            ui.box(ax, ay, aw, ah, 10.0,
-                   fill=((0.21, 0.22, 0.26, 0.98), (0.075, 0.08, 0.10, 0.98)),
-                   border=T.BORDER_SOFT)
+            ui.box(ax, ay, aw, ah, 12.0,
+                   fill=((0.30, 0.30, 0.34, 0.98), (0.16, 0.16, 0.19, 0.98)),
+                   border=T.BORDER_SUBTLE)
             cx, cy = ax + aw / 2, ay + ah / 2
-            ui.ring(cx, cy, 18, 1.5, T.TEXT_4)
-            ui.circle(cx, cy, 4.0, T.TEXT_4)
-            ui.circle(cx, cy, 1.4, T.TEXT_3)
+            ui.ring(cx, cy, 18, 1.5, T.TEXT_QUATERNARY)
+            ui.circle(cx, cy, 4.0, T.TEXT_QUATERNARY)
+            ui.circle(cx, cy, 1.4, T.TEXT_TERTIARY)
 
         # state + source -------------------------------------------------------
-        state = "PAUSED" if snap.paused else "NOW PLAYING"
-        caption = state + (f"  \u00b7  {snap.source}" if snap.source else "")
+        state = "Paused" if snap.paused else "Now playing"
+        caption = state + (f"  ·  {snap.source}" if snap.source else "")
         if snap.playing:
             phase = now * 7.0
             for i in range(3):
                 bh = 3.0 + (0.5 + 0.5 * math.sin(phase + i * 1.9)) * 7.0
-                ui.rect(tx + i * 4, y + 23 - bh, 2.1, bh, T.ACCENT)
+                ui.rect(tx + i * 4, y + 23 - bh, 2.1, bh, T.ACCENT_BLUE)
         else:
-            ui.circle(tx + 4, y + 19, 2.2, T.TEXT_4)
-        ui.text(ui.fit(caption, T.T_CAPTION, tw - 20, weight="semibold"),
-                tx + 18, y + 11, T.T_CAPTION, T.TEXT_3, weight="semibold")
+            ui.circle(tx + 4, y + 19, 2.2, T.TEXT_QUATERNARY)
+        ui.text(ui.fit(caption, T.T_CAPTION_2, tw - 20, weight="semibold"),
+                tx + 18, y + 11, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="semibold")
 
         # track text -----------------------------------------------------------
         ui.text(ui.fit(snap.title, T.T_BASE, tw, weight="semibold"), tx, y + 28,
-                T.T_BASE, T.TEXT, weight="semibold")
+                T.T_BASE, T.TEXT_PRIMARY, weight="semibold")
         byline = snap.byline or snap.source or "Windows media session"
-        ui.text(ui.fit(byline, T.T_SMALL, tw, weight="medium"), tx, y + 48,
-                T.T_SMALL, T.TEXT_3, weight="medium")
+        ui.text(ui.fit(byline, T.T_CAPTION_2, tw, weight="medium"), tx, y + 48,
+                T.T_CAPTION_2, T.TEXT_TERTIARY, weight="medium")
 
         # progress / live ------------------------------------------------------
         bx, by, bw, bh = layout["bar"]
@@ -142,21 +143,21 @@ class NowPlayingPanel:
             # monotonic clock captured alongside the snapshot.
             position = snap.position_at(time.monotonic())
             frac = position / snap.duration
-            ui.bar(bx, by, bw, bh, frac, T.ACCENT)
-            ui.text(clock_text(position), bx, y + 78, T.T_CAPTION,
-                    T.TEXT_4, weight="medium")
-            ui.text(clock_text(snap.duration), bx + bw, y + 78, T.T_CAPTION,
-                    T.TEXT_4, anchor="right", weight="medium")
+            progress(ui, bx, by, bw, bh, frac, (1.0, 1.0, 1.0, 0.85))
+            ui.text(clock_text(position), bx, y + 78, T.T_CAPTION_2,
+                    T.TEXT_QUATERNARY, weight="medium")
+            ui.text(clock_text(snap.duration), bx + bw, y + 78, T.T_CAPTION_2,
+                    T.TEXT_QUATERNARY, anchor="right", weight="medium")
         else:
             ui.rect(bx, by + bh / 2 - 0.5, bw, 1.0, T.HAIRLINE)
-            ui.text("LIVE", bx, y + 78, T.T_CAPTION, T.TEXT_4, weight="medium")
+            ui.text("Live", bx, y + 78, T.T_CAPTION_2, T.TEXT_QUATERNARY, weight="medium")
 
         # transport ------------------------------------------------------------
         for name, rect in layout["buttons"].items():
-            hover = ui.anim(("now-playing", name), float(_in(rect, *mouse)), 20.0)
+            hover = spring(ui, ("now-playing", name), float(_in(rect, *mouse)), T.SPRING_GENTLE)
             if hover > 0.01:
-                ui.container(*rect, "inset", hover=hover, shadow=False)
-            self._icon(ui, name, rect, T.TEXT if hover > 0.5 else T.TEXT_2, snap.playing)
+                ui.box(rect[0] - 1, rect[1], rect[2] + 2, rect[3], 9, (1.0, 1.0, 1.0, 0.12 * hover))
+            self._icon(ui, name, rect, T.TEXT_PRIMARY if hover > 0.5 else T.TEXT_SECONDARY, snap.playing)
 
     @staticmethod
     def _icon(ui, name, rect, color, playing):

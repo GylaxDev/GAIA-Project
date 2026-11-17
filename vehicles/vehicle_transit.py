@@ -12,7 +12,7 @@ import numpy as np
 
 from .vehicle_models import (
     ONE, GLASS, TRIM, P_PAINT, P_GLASS, P_CHROME, P_TRIM, P_MATTE, P_PIANO, P_FIXED, P_HEAD,
-    P_TAIL, P_LEFT, P_RIGHT, P_TYRE, P_PLATE, TYRE, RIM, REAR_SPIN,
+    P_TAIL, P_LEFT, P_RIGHT, P_TYRE, P_PLATE, P_METAL, TYRE, RIM, REAR_SPIN,
 )
 from .vehicle_coachwork import PIANO, MATTE, CHROME, SLAT, LENS
 from .vehicle_reference import (
@@ -41,7 +41,7 @@ def _door(C, x0, x1, side, z0=.46, z1=2.66):
     if not C.lod:
         C.sides[side].line([(xm, z0), (xm, z1)], .012, P_TRIM, TRIM, .008)
         for x in (xm - .07, xm + .07):
-            C.sides[side].line([(x, 1.00), (x, 1.80)], .016, P_CHROME, CHROME, .014)   # grab rails
+            C.sides[side].line([(x, 1.00), (x, 1.80)], .016, P_METAL, CHROME, .014)    # stainless grab rails
 
 
 # ======================================================================== bus
@@ -128,7 +128,7 @@ def _dual_tyre(m, ax, s, lod):
                               wr + wr * r * np.cos(a))) for u, r in profile]
     start = len(m.V)
     m.loft(np.stack(rings), TYRE, P_TYRE, cap_first=False, cap_last=False)
-    m.disc((ax, yc + s * (hw - .006), wr), rr * .93, (0, s, 0), RIM, P_CHROME, n)
+    m.disc((ax, yc + s * (hw - .006), wr), rr * .93, (0, s, 0), RIM, P_METAL, n)
     m.mark_animation(start, (ax, yc, wr), REAR_SPIN)
 
 
@@ -174,10 +174,10 @@ def _truck(m, lod):
         for x in (-1.0, 1.0):
             R.surface.line([(x, 1.04), (x, 2.96)], .016, P_MATTE, MATTE, .008)
         for x in (-.12, .12):
-            R.surface.line([(x, 1.55), (x, 2.30)], .020, P_CHROME, CHROME, .012)
+            R.surface.line([(x, 1.55), (x, 2.30)], .020, P_METAL, CHROME, .012)
         for z in (1.3, 2.0, 2.7):
             for x in (-1.0, 1.0):
-                R.surface.line([(x * .97, z - .06), (x * .97, z + .06)], .03, P_CHROME, CHROME, .012)
+                R.surface.line([(x * .97, z - .06), (x * .97, z + .06)], .03, P_METAL, CHROME, .012)
     for s in (1, -1):
         m.box(-3.60, s * 1.03, 3.00, .06, .14, .05, (.95, .55, .08), P_FIXED)         # roof marker lamps
 
@@ -206,7 +206,7 @@ def _truck(m, lod):
     m.box(-3.64, 0, .56, .20, 2.10, .22, TRIM, P_TRIM)                                   # underride bar
     _plate(R, .56, width=.46, height=.11)
     m.box(-3.74, 0, .56, .03, .46, .11, (.86, .86, .80), P_PLATE)
-    m.box(-.2, -.84, .72, 1.20, .52, .46, (.55, .56, .58), P_FIXED)                      # fuel tank
+    m.box(-.2, -.84, .72, 1.20, .52, .46, (.55, .56, .58), P_METAL)                      # bare aluminium fuel tank
     m.box(.9, .74, .70, .50, .30, .34, MATTE, P_MATTE)                                   # battery/air tank
     for x in (ax_f, ax_r):
         m.box(x, 0, .50, .12, 1.4, .12, TRIM, P_TRIM)                                    # axle

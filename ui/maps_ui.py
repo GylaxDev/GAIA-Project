@@ -1,15 +1,13 @@
-"""Interface chrome shared by the world-map and 3D views, in the graphite design language.
+"""Interface chrome shared by the world-map and 3D views, in the Apple "liquid glass" language.
 
-* Map screen: a floating sidebar container (brand, Search / Guides / Directions,
-  an expandable list of places, a travel call-to-action), a grouped control
-  cluster (map style / locate / full screen), a compass and a zoom pair.
-* 3D screen: a place card with search, a time + conditions card, the same
-  controls, plus the HUD building blocks (key-hint bar, status card, speed card).
+* Map screen: a floating glass sidebar (brand, Search / Guides / Directions, an expandable
+  list of places, a travel call-to-action), a grouped control cluster (map style / locate /
+  full screen), a compass and a zoom pair.
+* 3D screen: a place card with search, a time + conditions card, the same controls, plus the
+  HUD building blocks (key-hint bar, status card, speed card).
 
-Every surface is an ``Overlay2D.container`` (gradient fill + 1 px hairline), every
-label is Inter, and all coordinates are logical pixels.  ``layout`` is the single
-source of truth for geometry: drawing and hit-testing both use it, so they can
-never disagree.
+``layout`` is the single source of truth for geometry: drawing and hit-testing both use it,
+so they can never disagree.  All coordinates are logical pixels.
 """
 from __future__ import annotations
 
@@ -18,10 +16,16 @@ import time
 
 from . import theme as T
 from ..core.config import ACCENT
+from .ui_kit import (_in, _key_tokens, activity, alpha, button, chip, glass, icon_tile, inside, keycaps, mix, progress,
+                     search_field, spring, surface)
 
-WHITE = T.TEXT
-DIM = T.TEXT_3
-HOVER = (1.0, 1.0, 1.0, 0.09)
+# Re-export for backward compatibility
+from .theme import (
+    TEXT_PRIMARY as WHITE,
+    TEXT_TERTIARY as DIM,
+)
+
+HOVER = (1.0, 1.0, 1.0, 0.08)
 
 TIPS = {
     "sidebar": "Toggle sidebar", "map": "Map style", "locate": "Recenter",
@@ -30,40 +34,8 @@ TIPS = {
 }
 
 
-def _in(r, x, y):
-    return r[0] <= x <= r[0] + r[2] and r[1] <= y <= r[1] + r[3]
-
-
 def _wrap(ui):          # kept for older call sites; sizes are real pixels now
     return ui
-
-
-# ------------------------------------------------------------------ keycaps
-def _key_tokens(key):
-    """'W A S D' -> W A S D;  'WASD / arrows' -> WASD, arrows;  'Shift' -> Shift."""
-    out = []
-    for part in key.split(" / "):
-        part = part.strip()
-        bits = part.split()
-        if len(bits) > 1 and all(len(b) == 1 for b in bits):
-            out.extend(bits)
-        else:
-            out.append(part)
-    return out
-
-
-def keycaps(ui, x, y, key, size=11, dry=False):
-    """Draw ``key`` as one or more keycap chips starting at x, y.  Returns the width."""
-    cx = x
-    for i, tok in enumerate(_key_tokens(key)):
-        if i:
-            cx += 4
-        if dry:
-            tw = ui.text_w(tok, size, weight="semibold")
-            cx += max(size + 10, tw + 12)
-        else:
-            cx += ui.kbd(cx, y, tok, size)
-    return cx - x
 
 
 class MapsChrome:
@@ -218,47 +190,48 @@ class MapsChrome:
         if name != self._tip_name or self._tip_t < self.TIP_DELAY or name not in TIPS:
             return
         text = TIPS[name]
-        tw = ui.text_w(text, T.T_SMALL, weight="medium")
-        bw, bh = tw + 20, 28
+        tw = ui.text_w(text, T.T_CAPTION_2, weight="medium")
+        bw, bh = tw + 24, 28
         fade = min(1.0, (self._tip_t - self.TIP_DELAY) * 8.0)
         if side == "left":
-            x, y = rect[0] - 8 - bw, rect[1] + (rect[3] - bh) / 2
+            x, y = rect[0] - 10 - bw, rect[1] + (rect[3] - bh) / 2
         else:
-            x, y = rect[0] + rect[2] + 8, rect[1] + (rect[3] - bh) / 2
+            x, y = rect[0] + rect[2] + 10, rect[1] + (rect[3] - bh) / 2
         x = max(8, x)
-        ui.box(round(x), round(y), round(bw), bh, T.R_BUTTON, ((0.20, 0.20, 0.21, 0.97 * fade),
-                                                                (0.11, 0.11, 0.12, 0.97 * fade)),
-               (1, 1, 1, 0.30 * fade), shadow=12, shadow_dy=4, shadow_alpha=0.4 * fade)
-        ui.text_c(text, x + bw / 2, y + bh / 2, T.T_SMALL, (1, 1, 1, fade), anchor="center",
-                  weight="medium")
+        surface(ui, round(x), round(y), round(bw), bh, bh / 2,
+                ((0.16, 0.16, 0.18, 0.96 * fade), (0.10, 0.10, 0.12, 0.96 * fade)),
+                (1, 1, 1, 0.14 * fade), None)
+        ui.text_c(text, x + bw / 2, y + bh / 2, T.T_CAPTION_2, (1, 1, 1, fade), anchor="center", weight="medium")
 
     # ------------------------------------------------------------------ pieces
     def _button_group(self, ui, rects, names, mouse, icons, active=None):
         x, y, w, _ = rects[0]
         total = sum(r[3] for r in rects)
-        ui.container(x, y, w, total, "button")
+        glass(ui, x, y, w, total, 14, "hud")
         for i, (r, ic, nm) in enumerate(zip(rects, icons, names)):
-            hv = ui.anim(("hv", nm), 1.0 if _in(r, *mouse) else 0.0, 20.0)
+            hv = spring(ui, ("hv", nm), 1.0 if _in(r, *mouse) else 0.0, T.SPRING_GENTLE)
             if hv > 0.01:
-                ui.box(r[0] + 3, r[1] + 3, r[2] - 6, r[3] - 6, T.R_BUTTON - 2, (1, 1, 1, 0.13 * hv))
+                ui.box(r[0] + 3, r[1] + 3, r[2] - 6, r[3] - 6, 10, (1.0, 1.0, 1.0, 0.12 * hv))
             if i > 0:
-                ui.divider(r[0] + 8, r[1], r[2] - 16, (1, 1, 1, 0.16))
-            col = ACCENT if active == i else WHITE
+                ui.box(r[0] + 10, r[1], r[2] - 20, 1, 0.5, T.SEPARATOR)
+            col = T.ACCENT_BLUE if active == i else T.TEXT_PRIMARY
             ic(ui, r[0] + r[2] / 2, r[1] + r[3] / 2, 20, col)
 
     def _compass(self, ui, r, mouse, north_vec=(0.0, -1.0)):
         cx, cy = r[0] + r[2] / 2, r[1] + r[3] / 2
-        hv = ui.anim(("hv", "compass"), 1.0 if _in(r, *mouse) else 0.0, 20.0)
-        ui.container(r[0], r[1], r[2], r[3], "button", r=r[2] / 2, hover=hv)
-        ang = math.atan2(north_vec[0], -north_vec[1])
+        hv = spring(ui, ("hv", "compass"), 1.0 if _in(r, *mouse) else 0.0, T.SPRING_GENTLE)
         rad = r[2] / 2
+        surface(ui, r[0], r[1], r[2], r[3], rad, T.GLASS, mix(T.BORDER_DEFAULT, T.BORDER_EMPHASIZED, hv),
+                T.SHADOW_2, specular=False)
+        ang = math.atan2(north_vec[0], -north_vec[1])
         for i in range(24):
             a = ang + i * math.pi / 12.0
             r0, r1 = rad - 4.0, rad - (7.5 if i % 6 == 0 else 6.0)
+            col = (1, 1, 1, 0.65 if i % 6 == 0 else 0.26)
             ui.line(cx + r0 * math.sin(a), cy - r0 * math.cos(a),
                     cx + r1 * math.sin(a), cy - r1 * math.cos(a),
-                    1.3 if i % 6 == 0 else 1.0, (1, 1, 1, 0.65 if i % 6 == 0 else 0.28))
-        ui.text_c("N", cx, cy - 1, T.T_SMALL, (1.0, 0.36, 0.33, 1.0), anchor="center", weight="bold")
+                    1.3 if i % 6 == 0 else 1.0, col)
+        ui.text_c("N", cx, cy - 1, T.T_CAPTION_2, T.SYS_RED, anchor="center", weight="bold")
 
     # ------------------------------------------------------------------ shared cluster
     def draw_controls(self, ui, w, h, mode, mouse, fullscreen=False, north_vec=(0.0, -1.0)):
@@ -279,26 +252,16 @@ class MapsChrome:
             if rect:
                 self._tooltip(ui, name, rect, w, "right" if name in ("sidebar", "search") else "left")
 
-    def pill(self, ui, x, y, text, size=T.T_BODY, color=T.TEXT_2, pad=12, bold=False):
-        """A small one-line container; returns (width, height)."""
+    def pill(self, ui, x, y, text, size=T.T_BODY, color=T.TEXT_SECONDARY, pad=14, bold=False):
+        """A small one-line capsule; returns (width, height)."""
         tw = ui.text_w(text, size, weight="semibold" if bold else "medium")
         hgt = size + 16
-        ui.container(x, y, tw + 2 * pad, hgt, "panel", r=T.R_PILL, shadow=False)
+        glass(ui, x, y, tw + 2 * pad, hgt, hgt / 2, "hud")
         ui.text_c(text, x + pad, y + hgt / 2, size, color, weight="semibold" if bold else "medium")
         return tw + 2 * pad, hgt
 
     def _field(self, ui, x, y, w, h, query, placeholder="Search places"):
-        ui.container(x, y, w, h, "field", focus=True)
-        self.icon_search(ui, x + 18, y + h / 2, 16, DIM)
-        on = int(time.time() * 2) % 2 == 0
-        cx = x + 34
-        if query:
-            shown = ui.fit(query, T.T_BASE, w - 56)
-            cx += ui.text_c(shown, cx, y + h / 2, T.T_BASE, WHITE, weight="medium") + 1
-        else:
-            ui.text_c(placeholder, cx + 3, y + h / 2, T.T_BASE, T.TEXT_3)
-        if on:                       # drawn, not a glyph: Inter has no box-drawing characters
-            ui.rect(round(cx), round(y + h / 2 - 8), 1.5, 16, (1, 1, 1, 0.92))
+        search_field(ui, x, y, w, h, query, placeholder, True, time.time())
 
     # ------------------------------------------------------------------ map screen
     def draw_map_ui(self, ui, w, h, mouse, cities, marker, typing, query, fullscreen,
@@ -307,92 +270,94 @@ class MapsChrome:
         M, sw = T.MARGIN, self.SIDEBAR_W
         if self.sidebar_open:
             sb = rects["sidebar_bg"]
-            ui.container(*sb, "panel", r=14)
-            # brand row
-            ui.box(sb[0] + 16, sb[1] + 14, 30, 30, 8, T.ACCENT_FILL, (1, 1, 1, 0.9))
-            self.icon_locate(ui, sb[0] + 31, sb[1] + 29, 16, WHITE)
-            ui.text_c("Maps", sb[0] + 58, sb[1] + 29, T.T_HEAD, WHITE, weight="semibold")
+            glass(ui, *sb, 26, "menu")
+            ui.text_c("Maps", sb[0] + 20, sb[1] + 28, T.T_TITLE_3, T.TEXT_PRIMARY, weight="bold")
             tg = rects["sidebar"]
-            hv = ui.anim(("hv", "sidebar"), 1.0 if _in(tg, *mouse) else 0.0, 20.0)
-            ui.box(*tg, T.R_BUTTON, (1, 1, 1, 0.10 * hv))
-            self.icon_sidebar(ui, tg[0] + 16, tg[1] + 16, 18, T.TEXT_2)
+            hv = spring(ui, ("hv", "sidebar"), 1.0 if _in(tg, *mouse) else 0.0, T.SPRING_GENTLE)
+            ui.circle(tg[0] + 16, tg[1] + 16, 16, mix(T.FILL_3, T.FILL_1, hv))
+            self.icon_sidebar(ui, tg[0] + 16, tg[1] + 16, 18, T.TEXT_SECONDARY)
+            tiles = {"guides": T.TILE_ORANGE, "directions": T.TILE_BLUE}
             rows = (("search", "Search", self.icon_search), ("guides", "Guides", self.icon_guides),
                     ("directions", "Directions", self.icon_directions))
             for name, label, ic in rows:
                 r = rects[name]
-                hv = ui.anim(("hv", name), 1.0 if _in(r, *mouse) else 0.0, 20.0)
-                if name == "search" and typing:
-                    self._field(ui, *r, query)
+                hv = spring(ui, ("hv", name), 1.0 if _in(r, *mouse) else 0.0, T.SPRING_GENTLE)
+                if name == "search":
+                    if typing:
+                        self._field(ui, *r, query)
+                    else:
+                        ui.box(*r, r[3] / 2, T.FIELD_FILL if hv < 0.5 else T.MATERIAL_THICK)
+                        self.icon_search(ui, r[0] + 20, r[1] + r[3] / 2, 16, T.TEXT_TERTIARY)
+                        ui.text_c(label, r[0] + 38, r[1] + r[3] / 2, T.T_BODY + 1, T.TEXT_TERTIARY)
                     continue
                 on = name == "guides" and self.guides_open
                 if hv > 0.01 or on:
-                    ui.box(*r, T.R_BUTTON, (1, 1, 1, max(0.10 * hv, 0.07 if on else 0.0)))
-                ui.box(r[0] + 6, r[1] + 6, 28, 28, 7, T.INSET_FILL, T.BORDER_SOFT)
-                ic(ui, r[0] + 20, r[1] + 20, 16, T.TEXT)
-                ui.text_c(label, r[0] + 46, r[1] + r[3] / 2, T.T_BASE, WHITE, weight="medium")
+                    ui.box(*r, 12, T.GROUP_SELECTED if on else ((1, 1, 1, 0.08 * hv),) * 2)
+                tx, ty = r[0] + 6, r[1] + (r[3] - 28) / 2
+                ui.box(tx, ty, 28, 28, 7, tiles[name], None)
+                ic(ui, tx + 14, ty + 14, 16, (1, 1, 1, 1))
+                ui.text_c(label, r[0] + 46, r[1] + r[3] / 2, T.T_BODY + 1, T.TEXT_PRIMARY, weight="medium")
             if self.guides_open and cities:
                 c0 = rects["city:0"]
-                ui.text("TRAVEL GUIDES", c0[0] + 8, c0[1] - 22, T.T_CAPTION, T.TEXT_3, weight="semibold")
+                ui.text("Travel guides", c0[0] + 8, c0[1] - 22, T.T_CAPTION_2, T.TEXT_SECONDARY, weight="semibold")
                 for i, (name, _, _) in enumerate(cities):
                     r = rects[f"city:{i}"]
                     sel = marker is not None and marker[2] == name
-                    hv = ui.anim(("hv", f"city{i}"), 1.0 if _in(r, *mouse) else 0.0, 20.0)
+                    hv = spring(ui, ("hv", f"city{i}"), 1.0 if _in(r, *mouse) else 0.0, T.SPRING_GENTLE)
                     if hv > 0.01:
-                        ui.box(*r, T.R_BUTTON - 1, (ACCENT[0], ACCENT[1], ACCENT[2], 0.30 * hv))
+                        ui.box(*r, 10, T.GROUP_HOVER)
                     elif sel:
-                        ui.box(*r, T.R_BUTTON - 1, (1, 1, 1, 0.08))
-                    ui.text_c(name, r[0] + 12, r[1] + r[3] / 2, T.T_BODY, T.TEXT, weight="regular")
-                    ui.text_c(str((i + 1) % 10), r[0] + r[2] - 12, r[1] + r[3] / 2, T.T_SMALL,
-                              T.TEXT_3, anchor="right", weight="medium")
+                        ui.box(*r, 10, T.GROUP)
+                    ui.text_c(name, r[0] + 12, r[1] + r[3] / 2, T.T_BODY, T.TEXT_PRIMARY)
+                    ui.text_c(str((i + 1) % 10), r[0] + r[2] - 12, r[1] + r[3] / 2, T.T_CAPTION_2,
+                              T.TEXT_TERTIARY, anchor="right", weight="medium")
             if navigation is not None and navigation.destination is not None and "route_cancel" in rects:
                 rc = rects["route_cancel"]
                 cy = rc[1] - 84
-                ui.text("DRIVING ROUTE", rc[0] + 8, cy, T.T_CAPTION, T.TEXT_3, weight="semibold")
+                ui.text("Driving route", rc[0] + 8, cy, T.T_CAPTION_2, T.TEXT_SECONDARY, weight="semibold")
                 ui.text(ui.fit(navigation.destination.name, T.T_LABEL, rc[2] - 16, weight="semibold"),
-                        rc[0] + 8, cy + 20, T.T_LABEL, T.TEXT, weight="semibold")
-                ui.text(ui.fit(navigation.instruction, T.T_SMALL, rc[2] - 16),
-                        rc[0] + 8, cy + 43, T.T_SMALL, T.TEXT_2)
+                        rc[0] + 8, cy + 20, T.T_LABEL, T.TEXT_PRIMARY, weight="semibold")
+                ui.text(ui.fit(navigation.instruction, T.T_CAPTION_2, rc[2] - 16),
+                        rc[0] + 8, cy + 43, T.T_CAPTION_2, T.TEXT_SECONDARY)
                 if navigation.route is not None:
                     distance = (f"{navigation.remaining / 1000.:.1f} km" if navigation.remaining >= 1000.
                                 else f"{int(round(navigation.remaining / 10.) * 10)} m")
                     minutes = max(1, int(math.ceil(navigation.eta_seconds / 60.)))
                     summary = "Route complete" if navigation.status == "arrived" else f"{minutes} min · {distance} · estimated"
-                    ui.text(summary, rc[0] + 8, cy + 62, T.T_SMALL, T.TEXT_3)
-                ui.container(*rc, "button", r=7, shadow=False, hover=float(_in(rc, *mouse)))
-                ui.text_c("End route", rc[0] + rc[2] * .5, rc[1] + rc[3] * .5,
-                          T.T_SMALL, T.TEXT_2, anchor="center", weight="medium")
+                    ui.text(summary, rc[0] + 8, cy + 62, T.T_CAPTION_2, T.TEXT_TERTIARY)
+                button(ui, rc, "End route", mouse, key="route_end", kind="secondary", size=T.T_CAPTION_2)
             # travel call-to-action
             r = rects["go"]
-            hv = ui.anim(("hv", "go"), 1.0 if _in(r, *mouse) else 0.0, 20.0)
+            hv = spring(ui, ("hv", "go"), 1.0 if _in(r, *mouse) else 0.0, T.SPRING_GENTLE)
             if marker:
-                ui.container(*r, "accent", r=T.R_PANEL - 2)
-                if hv > 0.01:
-                    ui.box(*r, T.R_PANEL - 2, (1, 1, 1, 0.12 * hv))
-                ui.text("Travel to", r[0] + 14, r[1] + 12, T.T_SMALL, (1, 1, 1, 0.80), weight="medium")
-                ui.text(ui.fit(marker[2], T.T_LABEL + 1, r[2] - 64), r[0] + 14, r[1] + 31, T.T_LABEL + 1,
-                        WHITE, weight="semibold")
-                self.icon_arrow_up_right(ui, r[0] + r[2] - 24, r[1] + r[3] / 2, 18, WHITE)
+                top = mix(T.ACCENT_BLUE_FILL[0], (1, 1, 1, 1), 0.12 * hv)
+                bot = mix(T.ACCENT_BLUE_FILL[1], (1, 1, 1, 1), 0.12 * hv)
+                ui.box(*r, 20, (top, bot))
+                ui.line(r[0] + 20, r[1] + 0.5, r[0] + r[2] - 20, r[1] + 0.5, 1.0, (1, 1, 1, 0.30))
+                ui.text("Travel to", r[0] + 18, r[1] + 12, T.T_CAPTION_2, (1, 1, 1, 0.78), weight="medium")
+                ui.text(ui.fit(marker[2], T.T_LABEL + 1, r[2] - 70), r[0] + 18, r[1] + 31, T.T_LABEL + 1,
+                        T.TEXT_INVERTED, weight="semibold")
+                self.icon_arrow_up_right(ui, r[0] + r[2] - 28, r[1] + r[3] / 2, 18, T.TEXT_INVERTED)
             else:
-                ui.container(*r, "inset", r=T.R_PANEL - 2, hover=hv)
-                ui.text("Pick a place", r[0] + 14, r[1] + 13, T.T_LABEL, WHITE, weight="semibold")
-                ui.text(ui.fit("Click the map \u00b7 double-click to travel", T.T_SMALL, r[2] - 28),
-                        r[0] + 14, r[1] + 36, T.T_SMALL, T.TEXT_3)
-            tgt = rects["sidebar"]
+                ui.box(*r, 20, T.GROUP_HOVER if hv > 0.5 else T.GROUP)
+                ui.text("Pick a place", r[0] + 18, r[1] + 13, T.T_LABEL, T.TEXT_PRIMARY, weight="semibold")
+                ui.text(ui.fit("Click the map · double-click to travel", T.T_CAPTION_2, r[2] - 32),
+                        r[0] + 18, r[1] + 36, T.T_CAPTION_2, T.TEXT_TERTIARY)
         else:
             r = rects["sidebar"]
-            hv = ui.anim(("hv", "sidebar"), 1.0 if _in(r, *mouse) else 0.0, 20.0)
-            ui.container(*r, "button", hover=hv)
-            self.icon_sidebar(ui, r[0] + r[2] / 2, r[1] + r[3] / 2, 20, WHITE)
+            hv = spring(ui, ("hv", "sidebar"), 1.0 if _in(r, *mouse) else 0.0, T.SPRING_GENTLE)
+            surface(ui, *r, 14, T.GLASS, mix(T.BORDER_DEFAULT, T.BORDER_EMPHASIZED, hv), T.SHADOW_2)
+            self.icon_sidebar(ui, r[0] + r[2] / 2, r[1] + r[3] / 2, 20, T.TEXT_PRIMARY)
             if typing:
-                ui.container(r[0] + r[2] + 8, r[1], 280, r[3], "panel", r=T.R_BUTTON)
+                glass(ui, r[0] + r[2] + 8, r[1], 280, r[3], r[3] / 2, "hud")
                 self._field(ui, r[0] + r[2] + 12, r[1] + 4, 272, r[3] - 8, query)
         self.draw_controls(ui, w, h, "map", mouse, fullscreen)
         # attribution, tucked left of the zoom pair
-        att = "\u00a9 OpenStreetMap contributors"
-        aw = ui.text_w(att, T.T_CAPTION, weight="medium") + 20
+        att = "© OpenStreetMap contributors"
+        aw = ui.text_w(att, T.T_CAPTION_2, weight="medium") + 24
         ax, ay = w - T.MARGIN - self.BTN - 10 - aw, h - T.MARGIN - 24
-        ui.container(ax, ay, aw, 24, "panel", r=T.R_BUTTON - 2, shadow=False)
-        ui.text_c(att, ax + aw / 2, ay + 12, T.T_CAPTION, T.TEXT_3, anchor="center", weight="medium")
+        ui.box(ax, ay, aw, 24, 12, (0.0, 0.0, 0.0, 0.34))
+        ui.text_c(att, ax + aw / 2, ay + 12, T.T_CAPTION_2, T.TEXT_SECONDARY, anchor="center", weight="medium")
         self._finish_tooltips(ui, w, h, "map", mouse)
 
     # ------------------------------------------------------------------ 3D screen
@@ -400,94 +365,95 @@ class MapsChrome:
                       fullscreen, north_vec):
         M, B, ch = T.MARGIN, self.BTN, 56
         # time + conditions card, left of the control cluster
-        sub_fit = ui.fit(sub, T.T_SMALL, min(360, max(120, w * 0.30)))
+        sub_fit = ui.fit(sub, T.T_CAPTION_2, min(360, max(120, w * 0.30)))
         tcw = int(max(ui.text_w(clock, T.T_HEAD, weight="semibold"),
-                      ui.text_w(sub_fit, T.T_SMALL, weight="medium")) + 32)
+                      ui.text_w(sub_fit, T.T_CAPTION_2, weight="medium")) + 36)
         tx = w - M - B - 12 - tcw
-        ui.container(tx, M, tcw, ch, "panel", r=T.R_PANEL)
-        ui.text(clock, tx + 16, M + 8, T.T_HEAD, WHITE, weight="semibold")
-        ui.text(sub_fit, tx + 16, M + 33, T.T_SMALL, T.TEXT_3, weight="medium")
+        glass(ui, tx, M, tcw, ch, 20, "hud")
+        ui.text(clock, tx + 18, M + 8, T.T_HEAD, T.TEXT_PRIMARY, weight="semibold")
+        ui.text(sub_fit, tx + 18, M + 33, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="medium")
         # place card with the search button
         cw = int(max(200, min(380, tx - 12 - M)))
-        ui.container(M, M, cw, ch, "panel", r=T.R_PANEL)
-        sr = (M + 8, M + 10, 36, 36)
-        hv = ui.anim(("hv", "search"), 1.0 if _in((M, M, 52, ch), *mouse) else 0.0, 20.0)
-        ui.container(*sr, "button", hover=hv, shadow=False)
-        self.icon_search(ui, sr[0] + 18, sr[1] + 18, 17, WHITE)
+        glass(ui, M, M, cw, ch, 20, "hud")
+        sr = (M + 10, M + 10, 36, 36)
+        hv = spring(ui, ("hv", "search"), 1.0 if _in((M, M, 52, ch), *mouse) else 0.0, T.SPRING_GENTLE)
+        ui.circle(sr[0] + 18, sr[1] + 18, 18, mix(T.FILL_3, T.FILL_1, hv))
+        self.icon_search(ui, sr[0] + 18, sr[1] + 18, 17, T.TEXT_PRIMARY)
         if typing:
-            self._field(ui, M + 52, M + 8, cw - 60, ch - 16, query)
+            self._field(ui, M + 54, M + 10, cw - 64, ch - 20, query)
         else:
-            ui.text(ui.fit(label or "Scene", T.T_LABEL + 1, cw - 72, weight="semibold"),
-                    M + 58, M + 9, T.T_LABEL + 1, WHITE, weight="semibold")
-            ui.text(coords, M + 58, M + 32, T.T_SMALL, T.TEXT_3, weight="medium")
+            ui.text(ui.fit(label or "Scene", T.T_LABEL + 1, cw - 78, weight="semibold"),
+                    M + 60, M + 9, T.T_LABEL + 1, T.TEXT_PRIMARY, weight="semibold")
+            ui.text(coords, M + 60, M + 32, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="medium")
         self.draw_controls(ui, w, h, "scene", mouse, fullscreen, north_vec)
         self._finish_tooltips(ui, w, h, "scene", mouse)
 
     # ------------------------------------------------------------------ HUD blocks
     def hint_bar(self, ui, x, y, max_w, items):
-        """A row of keycap + label pairs in one container.  Items that don't fit are
+        """A row of keycap + label pairs in one glass capsule.  Items that don't fit are
         dropped from the end, but the last item (the shortcuts entry) always stays.
         Returns the width drawn."""
-        size = T.T_SMALL
+        size = T.T_CAPTION_2
         widths = []
         for key, label in items:
             widths.append(keycaps(ui, 0, 0, key, 11, dry=True) + 6 + ui.text_w(label, size, weight="medium"))
-        gap, pad = 14, 12
+        gap, pad = 16, 14
         keep = list(range(len(items)))
         while len(keep) > 1 and sum(widths[i] for i in keep) + gap * (len(keep) - 1) + 2 * pad > max_w:
             keep.pop(len(keep) - 2 if len(keep) > 2 else 0)
         total = sum(widths[i] for i in keep) + gap * (len(keep) - 1) + 2 * pad
-        hh = 36
-        ui.container(x, y, total, hh, "panel", r=T.R_PANEL - 2, shadow=False)
+        hh = 38
+        glass(ui, x, y, total, hh, hh / 2, "hud")
         cx = x + pad
         for i in keep:
             key, label = items[i]
             kw = keycaps(ui, cx, y + (hh - 21) / 2, key, 11)
-            ui.text_c(label, cx + kw + 6, y + hh / 2, size, T.TEXT_2, weight="medium")
+            ui.text_c(label, cx + kw + 6, y + hh / 2, size, T.TEXT_SECONDARY, weight="medium")
             cx += widths[i] + gap
         return total
 
     def status_card(self, ui, x, bottom, rows, progress=None, shimmer=0.0, min_w=0):
         """rows: [(text, colour, size, weight)].  Anchored by its bottom edge."""
-        pad, lead = 14, 6
+        from .ui_kit import progress as progress_bar
+        pad, lead = 16, 6
         tw = max(ui.text_w(t, s, weight=wt) for t, _, s, wt in rows)
         w = max(min_w, tw + 2 * pad)
-        h = sum(s + lead for _, _, s, _ in rows) + 2 * pad - lead + (6 if progress is not None else 0)
+        h = sum(s + lead for _, _, s, _ in rows) + 2 * pad - lead + (8 if progress is not None else 0)
         y = bottom - h
-        ui.container(x, y, w, h, "panel", r=T.R_PANEL - 2, shadow=False)
+        glass(ui, x, y, w, h, 18, "hud")
         cy = y + pad
         for t, col, s, wt in rows:
             ui.text(t, x + pad, cy, s, col, weight=wt)
             cy += s + lead
         if progress is not None:
-            ui.bar(x + pad, y + h - pad + 2, w - 2 * pad, 3, progress, ACCENT, shimmer)
+            progress_bar(ui, x + pad, y + h - pad + 1, w - 2 * pad, 4, progress, T.ACCENT_BLUE, shimmer)
         return w, h
 
     def speed_card(self, ui, x, y, name, kmh, gear, state, signal=0, braking=False, frac=0.0, unit="km/h"):
         """Driving instrument cluster.  ``signal``: -1 left, +1 right, 0 off."""
+        from .ui_kit import progress as progress_bar
         w, h = 236, 124
-        ui.container(x, y, w, h, "panel", r=T.R_PANEL)
-        ui.text(name.upper(), x + 16, y + 14, T.T_CAPTION, T.TEXT_3, weight="semibold")
+        glass(ui, x, y, w, h, 22, "hud")
+        ui.text(ui.fit(name, T.T_CAPTION_2, w - 100, weight="semibold"), x + 18, y + 14, T.T_CAPTION_2,
+                T.TEXT_TERTIARY, weight="semibold")
         sp = str(kmh)
-        sw = ui.text(sp, x + 16, y + 30, T.T_DISPLAY, WHITE, weight="bold")
-        ui.text(unit, x + 16 + sw + 6, y + 30 + 24, T.T_BASE, T.TEXT_3, weight="medium")
-        gb = (x + w - 16 - 44, y + 14, 44, 44)
-        ui.container(*gb, "button", shadow=False)
-        ui.text_c(gear, gb[0] + gb[2] / 2, gb[1] + gb[3] / 2, T.T_HEAD, ACCENT, anchor="center",
-                  weight="bold")
+        sw = ui.text(sp, x + 18, y + 30, 44, T.TEXT_PRIMARY, weight="bold")
+        ui.text(unit, x + 18 + sw + 6, y + 56, T.T_BODY, T.TEXT_TERTIARY, weight="medium")
+        gcx, gcy = x + w - 18 - 20, y + 14 + 20
+        ui.circle(gcx, gcy, 20, T.FILL_3)
+        ui.text_c(gear, gcx, gcy, T.T_HEAD, T.TEXT_PRIMARY, anchor="center", weight="bold")
         blink = int(time.time() * 2.6) % 2 == 0
-        for sgn, ax in ((-1, gb[0] - 24), (1, gb[0] - 8)):
+        for sgn, ax in ((-1, gcx - 20 - 36), (1, gcx - 20 - 18)):
             lit = signal == sgn and blink
-            col = (1.0, 0.72, 0.18, 1.0) if lit else (1, 1, 1, 0.14)
-            cy = gb[1] + gb[3] / 2
+            col = T.SYS_GREEN if lit else (1, 1, 1, 0.12)
             if sgn < 0:
-                ui.tri((ax + 12, cy - 7), (ax + 12, cy + 7), (ax, cy), col)
+                ui.tri((ax + 12, gcy - 7), (ax + 12, gcy + 7), (ax, gcy), col)
             else:
-                ui.tri((ax, cy - 7), (ax, cy + 7), (ax + 12, cy), col)
-        ui.bar(x + 16, y + 78, w - 32, 4, max(0.0, min(1.0, frac)),
-               (1.0, 0.36, 0.33, 1.0) if braking else ACCENT)
-        ui.text_c(ui.fit(state, T.T_SMALL, w - 32), x + 16, y + 98, T.T_SMALL,
-                  T.WARN if state.startswith("Blocked") else T.TEXT_3, weight="medium")
+                ui.tri((ax, gcy - 7), (ax, gcy + 7), (ax + 12, gcy), col)
+        progress_bar(ui, x + 18, y + 94, w - 36, 5, max(0.0, min(1.0, frac)),
+                     T.SYS_RED if braking else T.ACCENT_BLUE)
+        ui.text_c(ui.fit(state, T.T_CAPTION_2, w - 36), x + 18, y + 110, T.T_CAPTION_2,
+                  T.WARN_AMBER if state.startswith("Blocked") else T.TEXT_TERTIARY, weight="medium")
         return w, h
 
     def chips(self, ui, right, y, items, min_x=0):
@@ -495,11 +461,11 @@ class MapsChrome:
         Chips that would run past ``min_x`` are dropped.  Returns the width used."""
         x = right
         for text, col in items:
-            tw = ui.text_w(text, T.T_CAPTION, weight="medium") + 20
+            tw = ui.text_w(text, T.T_CAPTION_2, weight="semibold") + 22
             if x - tw < min_x:
                 break
             x -= tw
-            ui.container(x, y, tw, 24, "panel", r=7, shadow=False)
-            ui.text_c(text, x + tw / 2, y + 12, T.T_CAPTION, col, anchor="center", weight="medium")
+            chip(ui, x, y, text, col, T.T_CAPTION_2, h=24, pad=11,
+                 fill=(0.0, 0.0, 0.0, 0.34) if col in (T.TEXT_SECONDARY, T.TEXT_TERTIARY, T.TEXT_PRIMARY) else None)
             x -= 6
         return right - x

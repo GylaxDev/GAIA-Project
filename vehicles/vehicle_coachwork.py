@@ -22,7 +22,7 @@ import numpy as np
 from .vehicle_models import (
     ONE, GLASS, TYRE, RIM, TRIM, PLATE,
     P_PAINT, P_GLASS, P_TYRE, P_HEAD, P_TAIL, P_CHROME, P_TRIM, P_PLATE,
-    P_MATTE, P_LED, P_PIANO, P_SUNROOF,
+    P_MATTE, P_LED, P_PIANO, P_SUNROOF, P_METAL,
 )
 
 PIANO = (0.010, 0.010, 0.012)
@@ -300,8 +300,8 @@ def _wheel(C, x, r, hw, s, proud, spokes=10, rim_col=RIM, flare=0.0, arch_scale=
     m.loft(np.stack(rings), TYRE, P_TYRE, cap_first=False, cap_last=False)
     yo = s * y_out
     m.disc((x, yo - s * 0.040, r), r * 0.74, (0, s, 0), TRIM, P_TRIM, segs)                 # barrel
-    _spokes(m, x, yo - s * 0.022, r, r * 0.14, r * 0.74, spokes, s, rim_col, P_CHROME)
-    m.disc((x, yo - s * 0.016, r), r * 0.14, (0, s, 0), (0.20, 0.20, 0.22), P_CHROME, 8)    # hub
+    _spokes(m, x, yo - s * 0.022, r, r * 0.14, r * 0.74, spokes, s, rim_col, P_METAL)
+    m.disc((x, yo - s * 0.016, r), r * 0.14, (0, s, 0), (0.20, 0.20, 0.22), P_METAL, 8)     # hub
 
 
 def _mirror(m, x, y, z, s, col=ONE):

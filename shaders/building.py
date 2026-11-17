@@ -698,7 +698,12 @@ void main() {
             float gfade = 1.0 - smoothstep(700.0, 2200.0, gdist);
             vec3 sunTint = uSunColor / max(uSunColor.r, 1e-4);
             float sunVisible = uSunIntensity * (1.0 - clamp(uCloudCover, 0.0, 1.0) * 0.95);
-            sunReflection = sunTint * Fg * glint * glassMask * sf * sunVisible * gfade * mix(0.6, 1.0, ao);
+            // The mirrored solar disc needs an unobstructed sun. A partially shadowed
+            // value (soft PCF penumbra, settling map, receiver bias) still renders a
+            // white-hot glint after tone mapping, so the disc fades out well before the
+            // point is fully lit. Diffuse light keeps the smooth `sf`.
+            float sunUnblocked = smoothstep(0.55, 0.92, sf);
+            sunReflection = sunTint * Fg * glint * glassMask * sunUnblocked * sunVisible * gfade * mix(0.6, 1.0, ao);
         }
         if (metal > 0.5) lit += env * F0 * (1.0 - rough) * 0.60 * mix(0.55, 1.0, ao);
     }

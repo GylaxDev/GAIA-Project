@@ -33,7 +33,6 @@ class MenuHost:
         """Plain attributes the settings schema reads; called before the schema is built."""
         self.cache_dir = Path(cache_dir)
         self.cam_prefs = {"sensitivity": 1.0, "invert_y": False, "fly_speed": 60.0}
-        self.audio_master = 1.0
         self.city_shadows = True
         self.show_minimap = True
         self.show_hints = True

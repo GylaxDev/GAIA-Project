@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from . import theme as T
-from .maps_ui import _in, keycaps
+from .ui_kit import (_in, mix, button, close_button, divider, heading, keycaps, sheet, slider, spring, toggle)
 
 
 class SettingsPanel:
@@ -23,7 +23,7 @@ class SettingsPanel:
         pad = 24 if w >= 500 else 16
         pw = min(860 if self.tab == "shortcuts" else 580, w - 2 * T.MARGIN)
         row = 26 if h > 700 else 22
-        size = T.T_BASE if h > 700 else T.T_BODY
+        size = T.T_CALLOUT if h > 700 else T.T_BODY
         half = (len(self.shortcuts) + 1) // 2
         cols = ((self.shortcuts[:half], self.shortcuts[half:]) if pw >= 760
                 else (self.shortcuts,))
@@ -104,88 +104,81 @@ class SettingsPanel:
         layout = self.layout(ui, w, h)
         rects, pad = layout["rects"], layout["pad"]
         x, y, pw, ph = rects["panel"]
-        ui.container(x, y, pw, ph, "popup", r=T.R_PANEL + 2)
-        ui.text("Settings & shortcuts", x + pad, y + 22, T.T_TITLE + 1, T.TEXT, weight="semibold")
+        sheet(ui, x, y, pw, ph)
+        ui.text("Settings & shortcuts", x + pad, y + 20, T.T_TITLE_3 - 2, T.TEXT_PRIMARY, weight="bold")
         if pw >= 550:
-            state = f"{renderer.aa_samples}\u00d7 MSAA" if renderer.aa_samples else "No AA"
-            state += "  \u00b7  HUD " + ("on" if show_hud else "off")
-            ui.text_c(state, rects["close"][0] - 14, y + 33, T.T_SMALL, T.TEXT_3,
+            state = f"{renderer.aa_samples}× MSAA" if renderer.aa_samples else "No AA"
+            state += "  ·  HUD " + ("on" if show_hud else "off")
+            ui.text_c(state, rects["close"][0] - 14, y + 33, T.T_CAPTION_2, T.TEXT_TERTIARY,
                       anchor="right", weight="medium")
+
+        # Two-tab capsule control
+        a, b = rects["settings_tab"], rects["shortcuts_tab"]
+        track = (a[0], a[1], b[0] + b[2] - a[0], a[3])
+        ui.box(*track, track[3] / 2, T.FIELD)
         for name, label in (("settings_tab", "Settings"), ("shortcuts_tab", "Shortcuts")):
             r = rects[name]
-            hover = ui.anim(("settings", name), float(_in(r, *mouse)), 20.0)
-            ui.container(*r, "button", active=name == self.tab + "_tab", hover=hover, shadow=False)
-            ui.text_c(label, r[0] + r[2] / 2, r[1] + r[3] / 2, T.T_BODY, T.TEXT,
-                      anchor="center", weight="medium")
+            hover = spring(ui, ("settings", name), float(_in(r, *mouse)), T.SPRING_GENTLE)
+            active = name == self.tab + "_tab"
+            if active:
+                ui.box(r[0] + 2, r[1] + 2, r[2] - 4, r[3] - 4, (r[3] - 4) / 2,
+                       ((0.46, 0.46, 0.49, 1.0), (0.40, 0.40, 0.43, 1.0)))
+            ui.text_c(label, r[0] + r[2] / 2, r[1] + r[3] / 2, T.T_BODY,
+                      T.TEXT_PRIMARY if active else mix(T.TEXT_SECONDARY, T.TEXT_PRIMARY, 0.6 * hover),
+                      anchor="center", weight="semibold")
         r = rects["close"]
-        hover = ui.anim(("settings", "close"), float(_in(r, *mouse)), 20.0)
-        ui.container(*r, "inset", hover=hover)
-        cx, cy = r[0] + r[2] / 2, r[1] + r[3] / 2
-        ui.line(cx - 4, cy - 4, cx + 4, cy + 4, 1.5, T.TEXT_2)
-        ui.line(cx - 4, cy + 4, cx + 4, cy - 4, 1.5, T.TEXT_2)
-        ui.divider(x + pad, y + 98, pw - 2 * pad)
+        close_button(ui, r[0], r[1], mouse, key="f1_close", size=r[2])
         if self.tab == "settings":
             self._draw_controls(ui, layout, mouse, renderer)
         else:
             self._draw_shortcuts(ui, layout)
 
+    def _row_title(self, ui, x, y, text):
+        ui.text_c(text, x, y, T.T_CALLOUT, T.TEXT_PRIMARY, weight="semibold")
+
+    def _slider_row(self, ui, x, w, r, label, value, frac, key, live, shade):
+        ui.text(label, x, r[1] - 22, T.T_BODY, shade, weight="medium")
+        ui.text(value, x + w, r[1] - 21, T.T_CAPTION_2, shade, anchor="right", weight="medium")
+        slider(ui, r, frac, key=key, enabled=live)
+
     def _draw_controls(self, ui, layout, mouse, renderer):
         rects = layout["rects"]
         x, y, w, h = layout["body"]
-        ui.text_c("Eye adaptation", x, y + 15, T.T_LABEL, T.TEXT, weight="semibold")
-        r = rects["toggle"]
-        hover = ui.anim(("settings", "toggle"), float(_in(r, *mouse)), 20.0)
-        ui.container(*r, "button", active=renderer.ae_enabled, hover=hover, shadow=False)
-        ui.text_c("On" if renderer.ae_enabled else "Off", r[0] + r[2] / 2, r[1] + r[3] / 2,
-                  T.T_BODY, T.TEXT, anchor="center", weight="semibold")
-        color = T.TEXT_2 if renderer.ae_enabled else T.TEXT_4
+        self._row_title(ui, x, y + 15, "Eye adaptation")
+        toggle(ui, rects["toggle"], bool(renderer.ae_enabled), key="f1_ae")
+        color = T.TEXT_SECONDARY if renderer.ae_enabled else T.TEXT_QUATERNARY
         for name, label, value in (("brightness", "Brightness", f"{renderer.ae_brightness:+.2f} stops"),
                                    ("strength", "Adaptation strength", f"{renderer.ae_strength:.0%}")):
-            r = rects[name]
-            ui.text(label, x, r[1] - 20, T.T_BODY, color, weight="medium")
-            ui.text(value, x + w, r[1] - 20, T.T_SMALL, color, anchor="right", weight="medium")
             attr, lo, hi, _ = self.SLIDERS[name]
             frac = max(0.0, min(1.0, (getattr(renderer, attr) - lo) / (hi - lo)))
-            track_color = T.ACCENT if renderer.ae_enabled else T.TEXT_4
-            ui.bar(r[0], r[1] + 10, r[2], 4, frac, color=track_color)
-            ui.circle(r[0] + r[2] * frac, r[1] + 12, 7, color)
+            self._slider_row(ui, x, w, rects[name], label, value, frac, f"f1_{name}", renderer.ae_enabled, color)
         hint = ("Raise brightness to lift shaded streets." if renderer.ae_enabled
                 else "Turn it on (or press H) to preview changes.")
         if not renderer.hdr_scene or not renderer.ae_ok:
             hint = "Eye adaptation is unavailable without HDR support."
-        ui.text(ui.fit(hint, T.T_SMALL, w), x, y + 172, T.T_SMALL, T.TEXT_3)
-        ui.text(ui.fit("Brightness biases the target; strength scales the response.", T.T_SMALL, w),
-                x, y + 192, T.T_SMALL, T.TEXT_3)
+        ui.text(ui.fit(hint, T.T_CAPTION_2, w), x, y + 172, T.T_CAPTION_2, T.TEXT_TERTIARY)
+        ui.text(ui.fit("Brightness biases the target; strength scales the response.", T.T_CAPTION_2, w),
+                x, y + 192, T.T_CAPTION_2, T.TEXT_TERTIARY)
 
-        ui.divider(x, y + 212, w)
-        ui.text_c("Motion blur", x, y + 222, T.T_LABEL, T.TEXT, weight="semibold")
+        divider(ui, x, y + 212, w)
+        self._row_title(ui, x, y + 228, "Motion blur")
         r = rects["motion_blur"]
         value = float(renderer.motion_blur)
         attr, lo, hi, _ = self.SLIDERS["motion_blur"]
         frac = max(0.0, min(1.0, (value - lo) / (hi - lo)))
         on = value > 0.0
-        ui.text("Shutter", x, r[1] - 20, T.T_BODY, T.TEXT_2, weight="medium")
-        ui.text("Off" if not on else f"{value:.2f}\u00d7", x + w, r[1] - 20, T.T_SMALL,
-                T.TEXT_2, anchor="right", weight="medium")
-        ui.bar(r[0], r[1] + 10, r[2], 4, frac, color=T.ACCENT if on else T.TEXT_4)
-        ui.circle(r[0] + r[2] * frac, r[1] + 12, 7, T.TEXT_2 if on else T.TEXT_4)
-        ui.text(ui.fit("Smears fast camera and car motion; 0 turns it off.", T.T_SMALL, w),
-                x, y + 300, T.T_SMALL, T.TEXT_3)
-        ui.divider(x, y + 320, w)
-        ui.text_c("Chase camera FOV effect", x, y + 345, T.T_LABEL, T.TEXT, weight="semibold")
-        r = rects["fov_toggle"]
-        hover = ui.anim(("settings", "fov_toggle"), float(_in(r, *mouse)), 20.0)
-        ui.container(*r, "button", active=renderer.speed_fov, hover=hover, shadow=False)
-        ui.text_c("On" if renderer.speed_fov else "Off", r[0] + r[2] / 2, r[1] + r[3] / 2,
-                  T.T_BODY, T.TEXT, anchor="center", weight="semibold")
-        ui.text(ui.fit("Widens the view as the car speeds up.", T.T_SMALL, w),
-                x, y + 372, T.T_SMALL, T.TEXT_3)
+        self._slider_row(ui, x, w, r, "Shutter", "Off" if not on else f"{value:.2f}×", frac, "f1_blur", True,
+                         T.TEXT_SECONDARY)
+        ui.text(ui.fit("Smears fast camera and car motion; 0 turns it off.", T.T_CAPTION_2, w),
+                x, y + 300, T.T_CAPTION_2, T.TEXT_TERTIARY)
+        divider(ui, x, y + 320, w)
+        self._row_title(ui, x, y + 345, "Chase camera FOV effect")
+        toggle(ui, rects["fov_toggle"], bool(renderer.speed_fov), key="f1_fov")
+        ui.text(ui.fit("Widens the view as the car speeds up.", T.T_CAPTION_2, w),
+                x, y + 372, T.T_CAPTION_2, T.TEXT_TERTIARY)
         r = rects["reset"]
-        hover = ui.anim(("settings", "reset"), float(_in(r, *mouse)), 20.0)
-        ui.container(*r, "button", hover=hover, shadow=False)
-        ui.text_c("Reset defaults", r[0] + r[2] / 2, r[1] + r[3] / 2, T.T_BODY, T.TEXT_2,
-                  anchor="center", weight="medium")
-        ui.text_c("Esc / F1 to close", x + w, r[1] + r[3] / 2, T.T_SMALL, T.TEXT_3,
+        button(ui, r, "Reset defaults", mouse, key="f1_reset", kind="secondary")
+        ui.text_c("Esc / F1 to close", x + w, r[1] + r[3] / 2, T.T_CAPTION_2, T.TEXT_TERTIARY,
                   anchor="right", weight="medium")
 
     def _draw_shortcuts(self, ui, layout):
@@ -198,14 +191,12 @@ class SettingsPanel:
             cx, cy = x + ci * (col_w + gap), y - self.scroll_offset
             for title, rows in col:
                 if y <= cy and cy + 18 <= y + h:
-                    ui.text(title.upper(), cx, cy, T.T_CAPTION, T.TEXT_3, weight="semibold")
+                    heading(ui, title, cx, cy)
                 cy += 22
                 for key, what in rows:
                     if y <= cy and cy + row <= y + h:
                         keycaps(ui, cx, cy + (row - 21) / 2, key, 11)
                         ui.text_c(ui.fit(what, size, col_w - key_w), cx + key_w,
-                                  cy + row / 2, size, T.TEXT_2, weight="regular")
+                                  cy + row / 2, size, T.TEXT_SECONDARY, weight="regular")
                     cy += row
                 cy += 8
-            if ci == 0 and len(cols) == 2:
-                ui.vdivider(x + col_w + gap / 2, y, h)

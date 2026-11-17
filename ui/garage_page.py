@@ -21,7 +21,8 @@ from . import icons
 from . import theme as T
 from ..vehicles.driving import DRIVABLE_KINDS
 from .menu_ui import Page, frame_rect
-from .ui_kit import (alpha, brackets, button, chip, close_button, ease_out, heading, inside, mix, scrollbar,
+from .ui_kit import (alpha, button, card, chip, close_button, divider, ease_out_expo, focus_ring, glass, group,
+                     heading, inside, keycaps, mix, panel_header, scrollbar, sheet, spring, surface, toast,
                      toggle, toggle_rect)
 from ..vehicles.vehicle_instances import HEIGHTS, LENGTHS, MASSES, VEHICLE_NAMES, WHEELBASES, WHEEL_RADII, WIDTHS
 
@@ -200,7 +201,7 @@ class GaragePage(Page):
     def _geometry(self, w, h):
         fx, fy, fw, fh = frame_rect(w, h, 1120, 700)
         fy += self.menu.oy()
-        pad = 28.0
+        pad = 32.0
         detail_h = 168.0 if fh >= 680 else 150.0
         detail_y = fy + fh - 18 - detail_h
         tabs_y = fy + 86
@@ -218,48 +219,50 @@ class GaragePage(Page):
         fx, fy, fw, fh = g["frame"]
         pad = g["pad"]
         now = time.time()
-        ui.container(fx, fy, fw, fh, "popup", r=T.R_PANEL + 2)
+
+        sheet(ui, fx, fy, fw, fh)
         self.hits.add((fx, fy, fw, fh), "panel")
-        # header
-        ui.box(fx + pad, fy + 24, 44, 44, 11, T.ACCENT_SOFT, alpha(T.ACCENT, 0.55))
-        icons.draw(ui, "car", fx + pad + 22, fy + 46, 26, T.TEXT, 1.7)
-        ui.text("Garage", fx + pad + 58, fy + 24, T.T_HEAD + 4, T.TEXT, weight="bold")
-        ui.text("Call a vehicle to a clear road near you", fx + pad + 59, fy + 53, T.T_BODY, T.TEXT_3,
-                weight="medium")
-        cr = close_button(ui, fx + fw - pad - 32, fy + 28, mouse)
+
+        # Header
+        panel_header(ui, fx + pad, fy + 26, fw - 240, "Garage", "Call a vehicle to a clear road near you")
+
+        cr = close_button(ui, fx + fw - pad - 32, fy + 30, mouse)
         self.hits.add(cr, "close")
+
         count = host.garage_count() if hasattr(host, "garage_count") else 0
         if count:
-            chip(ui, fx + fw - pad - 32 - 12, fy + 34, f"{count} spawned", T.TEXT_2, anchor="right", icon="car")
+            chip(ui, fx + fw - pad - 32 - 12, fy + 36, f"{count} spawned", T.TEXT_SECONDARY, anchor="right", icon="car")
+
         self._draw_tabs(ui, g, mouse)
         self._draw_grid(ui, g, mouse, now)
         self._draw_detail(ui, g, mouse, now, count)
+
+        # Toast notification
         text, until, ok = self.toast
         if text and now < until:
-            tw = ui.text_w(text, T.T_BASE, weight="semibold") + 40
-            tx, ty = fx + (fw - tw) / 2, fy + 28
-            ui.container(tx, ty, tw, 38, "popup", r=T.R_PANEL - 2)
-            ui.text_c(text, tx + tw / 2, ty + 19, T.T_BASE, T.OK if ok else T.WARN, anchor="center", weight="semibold")
+            toast(ui, fx + fw / 2, fy + 28, text, ok)
 
     def _draw_tabs(self, ui, g, mouse):
         x, y = g["vx"], g["tabs_y"]
         for i, (label, kinds) in enumerate(CLASSES):
             n = len(VEHICLE_NAMES) if kinds is None else len(kinds)
-            tw = ui.text_w(label, T.T_BASE, weight="semibold") + 44
-            r = (x, y, tw, 34.0)
+            lw = ui.text_w(label, T.T_BODY, weight="semibold")
+            tw = lw + 22 + 28
+            r = (x, y + 2, tw, 32.0)
             sel = i == self.tab
-            hov = ui.anim(("gar_tab", i), float(inside(r, *mouse)), 18.0)
+            hov = spring(ui, ("gar_tab", i), float(inside(r, *mouse)), T.SPRING_GENTLE)
             self.hits.add(r, "tab", i)
+
             if sel:
-                ui.box(*r, T.R_BUTTON, T.ROW_FOCUS, alpha(T.SIGNAL, 0.45))
+                ui.box(*r, 16, (1.0, 1.0, 1.0, 0.15))
             elif hov > 0.01:
-                ui.box(*r, T.R_BUTTON, ((1, 1, 1, 0.05 * hov), (1, 1, 1, 0.025 * hov)))
-            ui.text_c(label, r[0] + 14, r[1] + 17, T.T_BASE, T.TEXT if sel else mix(T.TEXT_3, T.TEXT, hov),
+                ui.box(*r, 16, (1.0, 1.0, 1.0, 0.07 * hov))
+
+            ui.text_c(label, r[0] + 14, r[1] + 16, T.T_BODY, T.TEXT_PRIMARY if sel else mix(T.TEXT_SECONDARY, T.TEXT_PRIMARY, hov),
                       weight="semibold")
-            ui.text_c(str(n), r[0] + tw - 14, r[1] + 17, T.T_SMALL, T.SIGNAL if sel else T.TEXT_4,
-                      anchor="right", weight="semibold")
-            x += tw + 6
-        ui.divider(g["vx"], g["tabs_y"] + 42, g["vw"])
+            ui.text_c(str(n), r[0] + 14 + lw + 7, r[1] + 16, T.T_CAPTION_2, T.TEXT_SECONDARY if sel else T.TEXT_TERTIARY,
+                      weight="medium")
+            x += tw + 4
 
     def _draw_grid(self, ui, g, mouse, now):
         vx, vy, vw, vh = g["vx"], g["vy"], g["vw"], g["vh"]
@@ -270,6 +273,7 @@ class GaragePage(Page):
         ch = max(112.0, min(158.0, (vh - gap * (rows - 1)) / rows))
         total = rows * ch + (rows - 1) * gap
         self.scroll_max = max(0.0, total - vh)
+
         if self._reveal and self.kind in kinds:
             row = kinds.index(self.kind) // cols
             top, bot = row * (ch + gap), row * (ch + gap) + ch
@@ -280,6 +284,7 @@ class GaragePage(Page):
         self._reveal = False
         self.scroll = max(0.0, min(self.scroll_max, self.scroll))
         self.view = (vx - 6, vy - 4, vw + 12, vh + 8)
+
         ui.push_clip(*self.view)
         self._cards = []
         for i, kind in enumerate(kinds):
@@ -296,79 +301,91 @@ class GaragePage(Page):
         x, y, w, h = rect
         locked = kind not in DRIVABLE_KINDS
         sel = kind == self.kind
-        hov = ui.anim(("gar_card", kind), float(inside(rect, *mouse) and inside(self.view, *mouse)), 18.0)
+        hov = spring(ui, ("gar_card", kind), float(inside(rect, *mouse) and inside(self.view, *mouse)), T.SPRING_GENTLE)
         self.hits.add(rect, "card", kind, clip=self.view)
-        e = ease_out((self.menu.t - index * 0.03) / 0.30)
+
+        e = ease_out_expo((self.menu.t - index * 0.03) / 0.30)
         dim = (0.45 if locked else 1.0) * e
-        ui.box(x, y, w, h, T.R_CARD, T.CARD_FILL_FOCUS if sel else T.CARD_FILL,
-               alpha(T.SIGNAL, 0.75) if sel else mix(T.BORDER_SOFT, T.BORDER_PANEL, hov))
-        if hov > 0.01 and not sel:
-            ui.box(x, y, w, h, T.R_CARD, (1, 1, 1, 0.04 * hov))
-        art_h = h - 46
+
+        card(ui, x, y, w, h, selected=sel, hovered=hov > 0.01, focused=False,
+             enabled=not locked, r=18)
+
+        art_h = h - 50
         draw_vehicle(ui, kind, x + 14, y + 8, w - 28, art_h - 4, self.rgb, dim=dim, t=now if sel else 0.0)
-        ui.text(ui.fit(VEHICLE_NAMES[kind], T.T_BASE, w - 100), x + 16, y + h - 34, T.T_BASE,
-                T.TEXT if not locked else T.TEXT_3, weight="semibold")
-        ui.text(KIND_CLASS[kind], x + 16, y + h - 17, T.T_CAPTION, T.TEXT_3, weight="medium")
-        ui.text(f"{LENGTHS[kind]:.1f} m", x + w - 16, y + h - 33, T.T_SMALL, T.TEXT_2, anchor="right",
-                weight="semibold")
+
+        ui.text(ui.fit(VEHICLE_NAMES[kind], T.T_BODY, w - 90, weight="semibold"), x + 16, y + h - 38, T.T_BODY,
+                T.TEXT_PRIMARY if not locked else T.TEXT_TERTIARY, weight="semibold")
+        ui.text(KIND_CLASS[kind], x + 16, y + h - 20, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="regular")
+        ui.text(f"{LENGTHS[kind]:.1f} m", x + w - 16, y + h - 38, T.T_CAPTION_2, T.TEXT_SECONDARY, anchor="right",
+                weight="medium")
+
         if locked:
-            no_entry(ui, x + w - 26, y + 26, 11, alpha(T.LOCKED, 0.85))
-            ui.text("NOT DRIVABLE", x + w - 16, y + h - 17, T.T_CAPTION - 1, T.LOCKED, anchor="right",
-                    weight="semibold")
-        if sel:
-            brackets(ui, x, y, w, h, 11, T.SIGNAL, 1.6, inset=-3)
+            no_entry(ui, x + w - 26, y + 26, 11, alpha(T.ERROR_RED, 0.85))
+            ui.text("Not drivable", x + w - 16, y + h - 20, T.T_CAPTION_2, T.ERROR_RED, anchor="right",
+                    weight="medium")
 
     def _draw_detail(self, ui, g, mouse, now, count):
         host = self.menu.host
         x, y, w, h = g["detail"]
         kind = self.kind
         locked = kind not in DRIVABLE_KINDS
-        ui.box(x, y, w, h, T.R_PANEL - 2, (0.0, 0.0, 0.0, 0.26), T.BORDER_SOFT)
+
+        group(ui, x, y, w, h, 22)
+
         art = 250.0 if w >= 760 else 170.0
         draw_vehicle(ui, kind, x + 12, y + 12, art, h - 24, self.rgb, dim=0.5 if locked else 1.0, t=now)
+
         ix = x + art + 30
         right_w = 206.0
-        info_w = x + w - right_w - 24 - ix
-        ui.text(ui.fit(VEHICLE_NAMES[kind], T.T_HEAD, info_w, weight="bold"), ix, y + 16, T.T_HEAD, T.TEXT,
+        info_w = x + w - right_w - 28 - ix
+
+        ui.text(ui.fit(VEHICLE_NAMES[kind], T.T_HEAD, info_w, weight="bold"), ix, y + 16, T.T_HEAD, T.TEXT_PRIMARY,
                 weight="bold")
-        ui.text(KIND_CLASS[kind], ix, y + 42, T.T_SMALL, T.TEXT_3, weight="medium")
+        ui.text(f"{KIND_CLASS[kind]}  ·  {PALETTE[self.color][0]}", ix, y + 42, T.T_CAPTION_2, T.TEXT_TERTIARY,
+                weight="regular")
+
         specs = (("Length", f"{LENGTHS[kind]:.2f} m"), ("Width", f"{WIDTHS[kind]:.2f} m"),
                  ("Height", f"{HEIGHTS[kind]:.2f} m"), ("Weight", f"{int(round(MASSES[kind], -1)):,} kg"))
         sw = info_w / 4
         for i, (k, v) in enumerate(specs):
             sx = ix + i * sw
-            ui.text(k.upper(), sx, y + 68, T.T_CAPTION - 1, T.TEXT_4, weight="semibold")
-            ui.text(ui.fit(v, T.T_BASE, sw - 8), sx, y + 84, T.T_BASE, T.TEXT_2, weight="semibold")
-        # paint
-        ui.text("PAINT", ix, y + h - 52, T.T_CAPTION - 1, T.TEXT_4, weight="semibold")
-        ui.text(PALETTE[self.color][0], ix + 44, y + h - 53, T.T_SMALL, T.TEXT_2, weight="medium")
-        sx0, sy0 = ix, y + h - 34
+            ui.text(k, sx, y + 62, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="regular")
+            ui.text(ui.fit(v, T.T_BODY, sw - 8), sx, y + 78, T.T_BODY, T.TEXT_PRIMARY, weight="semibold")
+
+        # Paint swatches
+        sx0, sy0 = ix, y + h - 36
         step = min(30.0, info_w / len(PALETTE))
+        rad = min(10.0, (step - 5) / 2)
         for i, (name, rgb) in enumerate(PALETTE):
-            r = (sx0 + i * step, sy0, step - 4, 22.0)
-            hov = ui.anim(("gar_sw", i), float(inside(r, *mouse)), 20.0)
+            r = (sx0 + i * step, sy0, step - 2, 24.0)
+            cx_, cy_ = r[0] + rad + 2, r[1] + 12
+            hov = spring(ui, ("gar_sw", i), float(inside(r, *mouse)), T.SPRING_GENTLE)
             self.hits.add(r, "swatch", i)
             col = display_rgb(rgb)
-            ui.box(r[0], r[1], r[2], r[3], 6, (col[0], col[1], col[2], 1.0),
-                   (1, 1, 1, 0.55 + 0.4 * hov) if i == self.color else (1, 1, 1, 0.16 + 0.3 * hov),
-                   bw=2.0 if i == self.color else 1.0)
-        # actions
-        bx = x + w - right_w - 12
+            ui.circle(cx_, cy_, rad + hov * 0.8, (col[0], col[1], col[2], 1.0))
+            ui.ring(cx_, cy_, rad, 1.0, (1.0, 1.0, 1.0, 0.16))
+            if i == self.color:
+                ui.ring(cx_, cy_, rad + 3.5, 2.0, T.TEXT_PRIMARY)
+
+        # Actions
+        bx = x + w - right_w - 16
         enter = bool(getattr(host, "garage_enter", True))
-        row = (bx, y + 14, right_w, 26.0)
-        ui.text_c("Drive right away", bx, y + 27, T.T_BODY, T.TEXT_2, weight="medium")
+        row = (bx, y + 14, right_w, 28.0)
+        ui.text_c("Drive right away", bx, y + 28, T.T_BODY, T.TEXT_SECONDARY, weight="medium")
         toggle(ui, row, enter, key="gar_enter", focus=False, enabled=not locked)
         if not locked:
             self.hits.add(toggle_rect(row), "enter")
-        call = (bx, y + 52, right_w, 48.0)
+
+        call = (bx, y + 56, right_w, 46.0)
         label = "Call vehicle" if not locked else "Not drivable"
-        button(ui, call, label, mouse, key="gar_call", kind="accent" if not locked else "normal",
-               icon="car" if not locked else "lock", disabled=locked, size=T.T_BASE)
+        button(ui, call, label, mouse, key="gar_call", kind="primary" if not locked else "secondary",
+               icon="car" if not locked else "lock", disabled=locked, size=T.T_BODY + 1)
         if not locked:
             self.hits.add(call, "call")
-        clr = (bx, y + 110, right_w, 34.0)
+
+        clr = (bx, y + 112, right_w, 36.0)
         button(ui, clr, f"Remove mine ({count})" if count else "Nothing spawned", mouse, key="gar_clear",
-               kind="ghost", icon="trash", disabled=not count, size=T.T_BODY)
+               kind="tertiary", icon="trash", disabled=not count, size=T.T_BODY)
         if count:
             self.hits.add(clr, "clear")
 

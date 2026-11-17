@@ -7,7 +7,9 @@ from .overlay import OVERLAY_VS, OVERLAY_FS
 from .mapstyle import MAP_SHADE_GLSL
 from .streetlight import STREETPOLE_VS, STREETPOLE_FS
 from .skid import SKID_VS, SKID_FS
-from .vehicle import VEHICLE_VS, VEHICLE_FS, VEHICLE_SHADOW_VS, VEHICLE_SHADOW_FS
+from .contact import CONTACT_VS, CONTACT_FS
+from .vehicle import (VEHICLE_VS, VEHICLE_FS, VEHICLE_GLASS_MAT_FS,
+                      VEHICLE_SHADOW_VS, VEHICLE_SHADOW_FS)
 from .neon import NEON_VS, NEON_FS, NEON_SPILL, BLOOM_VS, BLOOM_BLUR_FS
 from .post import (AE_METER_FS, AE_ADAPT_FS, BLOOM_PREFILTER_FS, BLOOM_DOWN_FS,
                    BLOOM_COMPOSITE_FS, STAR_FS, STAR_SRC_FS, STAR_STREAK_FS)

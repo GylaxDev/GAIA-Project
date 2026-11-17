@@ -71,6 +71,9 @@ float nearShadowPCF(vec3 p, vec3 N, vec3 L, vec3 worldDx, vec3 worldDy) {
     float visibility = mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
     return mix(1.0, visibility, uNearShadowStrength);
 }
+float vehicleShadowTap(vec2 uv, float ref) {
+    return textureLod(uVehicleShadowMap, vec3(uv, ref), 0.0);
+}
 float vehicleShadowPCF(vec3 world, vec3 N, vec3 L) {
     if (uVehicleShadowStrength <= 0.0) return 1.0;
     // Retain the dedicated car map's bias/filtering for tyre/road contact.
@@ -81,14 +84,30 @@ float vehicleShadowPCF(vec3 world, vec3 N, vec3 L) {
     inside *= step(0.0, p.z) * step(p.z, 1.0);
     if (inside <= 0.0) return 1.0;
     float ref = p.z - uVehicleShadowBias * max(.4, 1.0 - dot(N, L));
-    // Five hardware-bilinear comparison taps (centre + four diagonals, ~3x3 texel
-    // footprint): smooth, alias-free edges on the finer map without a 9-tap kernel.
-    float sum = texture(uVehicleShadowMap, vec3(p.xy, ref)) * .36;
+    // Kernel radius in texels. Wide enough to dissolve the map's stair-stepped silhouettes,
+    // narrow enough to keep car edges crisp.
+    float radius = uVehicleShadowTexel * 1.9;
+    // Cheap rejection: centre + four diagonals at 85 % radius (each a hardware-bilinear tap).
+    // Pixels that are fully lit or fully shadowed stop here, which is most of the screen.
+    float sum = vehicleShadowTap(p.xy, ref);
     for (int i = 0; i < 4; ++i) {
-        vec2 o = vec2((i & 1) == 0 ? -.75 : .75, (i & 2) == 0 ? -.75 : .75) * uVehicleShadowTexel;
-        sum += texture(uVehicleShadowMap, vec3(p.xy + o, ref)) * .16;
+        vec2 o = vec2((i & 1) == 0 ? -.6 : .6, (i & 2) == 0 ? -.6 : .6) * radius;
+        sum += vehicleShadowTap(p.xy + o, ref);
     }
-    return mix(1.0, sum, uVehicleShadowStrength * inside);
+    float vis = sum * .2;
+    if (sum > .001 && sum < 4.999) {
+        // Penumbra / silhouette: 12 Vogel-disk taps, rotated per pixel (interleaved gradient
+        // noise) so the residual banding becomes fine, stable dither rather than stair-steps.
+        float rot = fract(52.9829189 * fract(dot(floor(gl_FragCoord.xy), vec2(.06711056, .00583715)))) * 6.2831853;
+        float acc = 0.0;
+        for (int i = 0; i < 12; ++i) {
+            float a = rot + float(i) * 2.39996323;
+            float r = sqrt((float(i) + .5) / 12.0);
+            acc += vehicleShadowTap(p.xy + vec2(cos(a), sin(a)) * (r * radius), ref);
+        }
+        vis = acc * (1.0 / 12.0);
+    }
+    return mix(1.0, vis, uVehicleShadowStrength * inside);
 }
 float shadowPCF(vec3 world, vec3 N, vec3 L, vec3 worldDx, vec3 worldDy) {
     float city = 1.0;

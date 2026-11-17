@@ -90,7 +90,9 @@ void main() {
     float wc = 1.0 / (1.0 + dot(c, LUMA)), wd = 1.0 / (1.0 + dot(d, LUMA));
     vec3 col = (a * wa + b * wb + c * wc + d * wd) / (wa + wb + wc + wd);
     float lum = max(dot(col, LUMA), 1e-4);
-    float knee = max(uThreshold * 0.5, 1e-3);
+    // Keep a smooth onset without admitting ordinary lights at half the cutoff.
+    // The 20% knee starts at 80% of the threshold, in exposed HDR units.
+    float knee = max(uThreshold * 0.2, 1e-3);
     float soft = clamp(lum - uThreshold + knee, 0.0, 2.0 * knee);
     soft = soft * soft / (4.0 * knee);
     float w = max(soft, lum - uThreshold) / lum;

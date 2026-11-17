@@ -14,6 +14,7 @@ import numpy as np
 
 from .flatmap import FlatMap
 from . import theme as T
+from .ui_kit import glass
 from .maps_ui import MapsChrome, _in
 from .map_draw import destination_pin, place_symbol, project_world, route_stroke
 from ..world.places import scene_places
@@ -220,13 +221,12 @@ class MapScreen:
                 lab = ui.fit(label, T.T_BASE, 320, weight="semibold")
                 tw = ui.text_w(lab, T.T_BASE, weight="semibold")
                 bx, by = round(x - tw / 2 - 14), round(y - 54)
-                ui.container(bx, by, round(tw + 28), 30, "popup", r=T.R_BUTTON)
+                glass(ui, bx, by, round(tw + 28), 30, 15, "menu")
                 ui.text_c(lab, x, by + 15, T.T_BASE, T.TEXT, anchor="center", weight="semibold")
         if self.tiles.offline:
             msg = "Map tiles unavailable (offline?)"
             tw = ui.text_w(msg, T.T_BASE, weight="medium")
-            ui.container(round(W / 2 - tw / 2 - 16), 16, round(tw + 32), 34, "popup", r=T.R_BUTTON,
-                         shadow=False)
+            glass(ui, round(W / 2 - tw / 2 - 16), 16, round(tw + 32), 34, 17, "menu", shadow=False)
             ui.text_c(msg, W / 2, 33, T.T_BASE, T.WARN, anchor="center", weight="medium")
         self.chrome.draw_map_ui(ui, W, H, mouse, self.cities, self.marker, typing, query,
                                  fullscreen, tiles_dark=self.invert > 0.5,

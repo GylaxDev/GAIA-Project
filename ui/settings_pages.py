@@ -1,4 +1,4 @@
-"""The settings schema: nine pages of live controls, each bound to a real value.
+"""The settings schema: eight pages of live controls, each bound to a real value.
 
 ``build(app)`` returns the categories shown by the Settings screen.  Every setting
 reads its current value from the object that owns it (renderer, camera, sky clock ...)
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import math
 
-from ..audio import car as _audio
 from ..core.camera import Camera
 from ..core.config import DEFAULT_TRAFFIC_COUNT
 from ..settings.store import Category, Section, Setting
@@ -132,16 +131,6 @@ def build(app):
     def set_fullscreen(v):
         if bool(v) != bool(pg.display.is_fullscreen()):
             app.toggle_fullscreen()
-
-    def set_master(v):
-        app.audio_master = float(v)
-        _audio.set_master_volume(float(v))
-
-    def set_ui_volume(v):
-        app.ui_sound.volume = float(v)
-
-    def set_ui_muted(v):
-        app.ui_sound.muted = not bool(v)
 
     def hdr():
         return bool(getattr(r(), "hdr_scene", False))
@@ -276,19 +265,6 @@ def build(app):
         ]),
     ])
 
-    # ------------------------------------------------------------------ audio
-    audio = Category("audio", "Audio", "speaker", "Volume and interface sounds", [
-        Section("Volume", [
-            slider("master", "Master volume", lambda: float(app.audio_master), set_master, 0.0, 1.5, 0.05, pct,
-                   "Engines, tyres, wind, impacts and interface sounds."),
-            toggle("ui_sounds", "Interface sounds", lambda: not app.ui_sound.muted, set_ui_muted,
-                   "Clicks and chimes when you use menus."),
-            slider("ui_volume", "Interface volume", lambda: float(app.ui_sound.volume), set_ui_volume,
-                   0.0, 1.5, 0.05, pct, "Loudness of menu sounds relative to the master volume.",
-                   enabled=lambda: not app.ui_sound.muted),
-        ]),
-    ])
-
     # -------------------------------------------------------------- interface
     interface = Category("interface", "Interface", "layout", "What the HUD shows and how big it is", [
         Section("Heads-up display", [
@@ -345,4 +321,4 @@ def build(app):
         ]),
     ])
 
-    return [graphics, post, camera, world, traffic, audio, interface, controls, advanced]
+    return [graphics, post, camera, world, traffic, interface, controls, advanced]

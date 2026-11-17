@@ -2,10 +2,12 @@
 from .hdr import HDR_CONV, HDR_OUT
 from .streetspill import STREET_SPILL
 from .materials import MATERIAL_LIGHT
+from .env import ENV_SKY
 from .shadow import SHADOW_PCF
+from .sun import SUN_LIGHT
 # Single-pass instanced car shader.  The per-vertex `aPart` is the material id (see
-# vehicle_models.py): 0 paint | 1 glass | 2 tyre | 3 warm headlight | 4 taillight | 5 chrome/alloy
-# | 6 trim | 7 plate | 8 fixed paint | 10 matte plastic | 11 LED signature | 12 piano black
+# vehicle_models.py): 0 paint | 1 glass | 2 tyre | 3 warm headlight | 4 taillight | 5 chrome
+# | 6 trim | 7 plate | 8 fixed paint | 9 satin metal | 10 matte plastic | 11 LED signature | 12 piano black
 # | 13 panoramic roof glass | 14 cool LED projector | 15 ground-glow quad | 16/17 indicators.
 # Flags: lamps=1, brake=2, left=4, right=8; bits 4..11 hold the flash phase.
 # Signal furniture uses lens materials 18..21 and state=flags&3, left arrow=16.
@@ -119,6 +121,25 @@ vec3 thinFilmTint(float cosV, float thicknessNm) {
     return 0.5 + 0.5 * cos(phase);                                  // pi reversal at the denser layer
 }
 
+// Reflected solar disc: the source of the clear-coat / chrome / glass glare.
+// The sun has a 0.27-degree angular radius and is roughly 34,000x brighter than a sunlit white
+// body, so a polished panel returns a white-hot point.  Roughness widens the
+// lobe while `discArea / spread` conserves its energy. Only polished coatings,
+// chrome and glass use this tight core; satin metal uses a broad irradiance lobe.
+// The result is scene-linear HDR;
+// the bloom, anamorphic streak and starburst passes downstream do the spreading.
+// F is the interface reflectance and gain trims the effect per material.
+vec3 solarGlare(vec3 R, vec3 L, float rough, float F, float gain) {
+    float rl = max(dot(R, L), 0.0);
+    float a2 = 2.0 * (1.0 - rl);                                   // 1 - cos(angle)
+    float spread = SUN_RADIUS * SUN_RADIUS + rough * rough * 0.010;
+    float core = exp(-a2 / spread) * (SUN_RADIUS * SUN_RADIUS) / spread;
+    // Two halos: the tight coat/clearance glare and the wide bloom source.
+    float halo = exp(-a2 / 0.0012) * 0.55 + exp(-a2 / 0.0200) * 0.16;
+    vec3 solar = uSunColor * (SUN_RADIANCE / SOLAR_IRRADIANCE);
+    return (solar * core + uSunColor * halo) * F * gain;
+}
+
 // A stable brush direction: horizontal on faces, radial on horizontal surfaces.
 vec3 brushTangent(vec3 N) {
     vec3 up = abs(N.z) > 0.95 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);
@@ -127,7 +148,7 @@ vec3 brushTangent(vec3 N) {
 
 // Anisotropic (brushed / machined) highlight: tight across the brush, wide along it.
 float brushedHighlight(vec3 N, vec3 V, vec3 L, vec3 T, float streak, float sharp) {
-    vec3 H = normalize(V + L);
+    vec3 H = (V + L) / max(length(V + L), 1e-4);
     float TdH = dot(T, H), BdH = dot(cross(N, T), H);
     float aT = mix(0.62, 0.16, sharp), aB = mix(0.14, 0.025, sharp);
     float d = exp(-(TdH * TdH) / (aT * aT) - (BdH * BdH) / (aB * aB));
@@ -304,6 +325,27 @@ void main() {
 }
 """)
 
+# Cabin windows and lamp covers use the blended transmission draw, which returns before
+# mrt_fs can store a finish weight, so screen-space reflections skipped them entirely.
+# This companion target stores just the pane surface (depth is written by the same draw).
+VEHICLE_GLASS_MAT_FS = ("""
+#version 330 core
+in vec3 vWorld;
+in vec3 vNormal;
+flat in float vVisibility;
+uniform vec3 uCamPos;
+layout(location = 0) out vec4 oMat;
+""" + VEHICLE_DISSOLVE + """
+void main() {
+    vehicleDissolve(vVisibility);
+    // Thin shells are seen from both sides: store the eye-facing normal so the
+    // reflection ray leaves the pane outward, exactly as the colour pass reflects it.
+    vec3 N = normalize(vNormal);
+    N = dot(N, normalize(uCamPos - vWorld)) < 0.0 ? -N : N;
+    oMat = vec4(N * 0.5 + 0.5, 0.92);   // same finish weight as the opaque glazing (part 1)
+}
+""")
+
 VEHICLE_FS = ("""
 #version 330 core
 in vec3 vWorld;
@@ -318,9 +360,8 @@ in vec3 vWheelNormal;
 flat in int vWheelRole;
 flat in int vFlags;
 flat in float vVisibility;
-uniform sampler2D uSkyLUT;     // atmosphere table shared with the sky pass (reflections)
-uniform float uSkyLutOn;
-uniform vec3  uSkySunDir;
+// uSkyLUT / uSkyLutOn / uSkySunDir, the cloud deck and the atmosphere uniforms
+// arrive with ENV_SKY, which supplies envSky() exactly as the sky pass draws it.
 uniform vec3  uCamPos, uSunDir, uFogColor;
 uniform vec3  uSunColor, uAmbColor;
 uniform float uFogNear, uFogFar, uNightFactor, uExposure;
@@ -328,19 +369,21 @@ uniform vec3  uHeadlightColor;
 uniform vec3  uTaillightColor;
 uniform vec3  uGlowColor;
 uniform vec3  uLedColor;
+uniform float uWheelAO;      // 0..1 recess occlusion inside the wheel (brake disc, hub)
 uniform float uTrafficClock;
-uniform int   uLensPass;   // 0 = transmittance multiply, 1 = additive reflection (parts 22/23 only)
+uniform int   uLensPass;   // 0 = transmittance multiply, 1 = additive reflection (parts 22/23/24)
 // Layered paint controls: x coat glossiness (.95-.98), y orange-peel amplitude,
 // z metallic-flake density, w pearl / thin-film strength.  See MATERIAL_LIGHTING.md.
 uniform vec4  uPaintCoat;
 out vec4 FragColor;
-""" + HDR_CONV + HDR_OUT + MATERIAL_LIGHT + STREET_SPILL + SHADOW_PCF + VEHICLE_PAINT + VEHICLE_LAMPS + VEHICLE_DISSOLVE + """
+""" + HDR_CONV + HDR_OUT + MATERIAL_LIGHT + ENV_SKY + SUN_LIGHT + STREET_SPILL + SHADOW_PCF + VEHICLE_PAINT + VEHICLE_LAMPS + VEHICLE_DISSOLVE + """
 vec3 ACESFilm(vec3 x) {
     float a = 2.51; float b = 0.03; float c = 2.43; float d = 0.59; float e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
-// Cheap environment: bright sky above the horizon, dark road below it.
+// Fallback environment when the atmosphere table is unavailable (8-bit / no post
+// path): bright sky above the horizon, dark road below it.
 vec3 envColor(vec3 R) {
     vec3 haze = acesInv(pow(max(uFogColor, vec3(0.0)), vec3(2.2))) / max(uExposure, 1e-4);
     vec3 sky  = haze + uAmbColor * 0.55;
@@ -350,20 +393,14 @@ vec3 envColor(vec3 R) {
     return e;
 }
 
-// Reflection environment: the real atmosphere table the sky pass uses (cheap: one
-// texture fetch, no cloud noise), darkened toward the horizon by the city canyon
-// and falling to a dark road below it.  Falls back to the analytic gradient.
+// Reflection environment: the shared envSky() the sky pass, building glazing and
+// water already reflect.  It carries the same advected cloud deck as the sky, so
+// an overcast car shows cloud colour instead of a clear blue dome, and it returns
+// dark street/city radiance for every direction at or below the horizon -- a car's
+// lower silhouette and shaded flank no longer pick up a bright sky rim.
 vec3 skyEnv(vec3 R) {
-    if (uSkyLutOn < 0.5) return envColor(R);
-    vec3 gnd    = envColor(vec3(0.0, 0.0, -1.0));
-    vec3 facade = envColor(vec3(0.0, 0.0, 1.0)) * 0.30;
-    vec2 sxy = (length(uSkySunDir.xy) > 1e-3) ? normalize(uSkySunDir.xy) : vec2(1.0, 0.0);
-    vec2 rxy = (length(R.xy) > 1e-4) ? normalize(R.xy) : sxy;
-    float relAz = acos(clamp(dot(rxy, sxy), -1.0, 1.0));
-    float v = sqrt(clamp((R.z + 0.1) / 1.1, 0.0, 1.0));
-    vec3 atm = texture(uSkyLUT, vec2(relAz * 0.31830989, v)).rgb;
-    float canyon = 0.5 * (1.0 - smoothstep(0.03, 0.50, R.z));
-    return mix(gnd, mix(atm, facade, canyon), smoothstep(0.0, 0.035, R.z));
+    if (uSkyLutOn < 0.5) return weatherSky(envColor(R), R, normalize(uSunDir));
+    return envSky(R, normalize(uSunDir));
 }
 
 // Rough reflection: blend the sharp lookup toward the half-way (cosine-ish) lookup.
@@ -371,6 +408,17 @@ vec3 skyEnvRough(vec3 R, vec3 N, float rough) {
     vec3 sharp = skyEnv(R);
     if (rough < 0.05) return sharp;
     return mix(sharp, skyEnv(normalize(R + N)), smoothstep(0.0, 0.7, rough));
+}
+
+// Satin alloy/unplated metal integrates a broad cone of the environment. Two
+// sharp lookups are not a rough reflection: they still carry a crisp horizon.
+// Sharp scene-geometry SSR is deliberately excluded for this finish below.
+vec3 satinEnv(vec3 R, vec3 N) {
+    vec3 axis = normalize(R + N * 0.30);
+    vec3 T = brushTangent(axis), B = cross(axis, T);
+    return (skyEnv(axis) * 2.0
+          + skyEnv(normalize(axis + T * 0.65)) + skyEnv(normalize(axis - T * 0.65))
+          + skyEnv(normalize(axis + B * 0.65)) + skyEnv(normalize(axis - B * 0.65))) / 6.0;
 }
 
 // Sun highlight of a microfacet-like lobe.  Exponent from roughness; the peak is
@@ -388,6 +436,8 @@ void main() {
     float lensFw = max(fwidth(lensCell.x), fwidth(lensCell.y));
     vec2 chipCell = vec2(vLocalXY.y, vLocalZ) / 0.0075;          // 7.5 mm LED chip pitch, car-fixed
     float chipFw = max(fwidth(chipCell.x), fwidth(chipCell.y));
+    // Filter subpixel lathe lines in uniform control flow, before material branches.
+    float wheelRadius = length(vWheelLocal.xz), wheelFw = fwidth(wheelRadius);
     bool baked = vColor.b > 1.5;                                  // lamp coordinates present (vehicle_lamps.py)
     if (vVisibility <= 0.0) discard;
     if (part == 15) {                        // translucent ground-glow quads (night)
@@ -407,6 +457,13 @@ void main() {
     vec3 V = normalize(uCamPos - vWorld);
     vec3 L = normalize(uSunDir);
     float sf = shadowPCF(vWorld, N, L);
+    // Reflected solar disc / sparkle needs an *unobstructed* sun AND one the cloud
+    // deck has not already swallowed, exactly like the building glazing glint.  The
+    // mirror image of a 0.5-degree disc cannot be half there: a soft PCF penumbra,
+    // a settling/receiver-biased map or any partial shadow value would otherwise
+    // still paint a white-hot glint inside the shade.  Diffuse light keeps the
+    // smooth `sf`; sky and cloud reflections are ambient and are never gated.
+    float sunVis = smoothstep(0.55, 0.92, sf) * (1.0 - 0.95 * clamp(uCloudCover, 0.0, 1.0));
     float NdotL = max(dot(N, L), 0.0);
     float NdotV = clamp(dot(N, V), 0.0, 1.0);
     float fres  = pow(1.0 - NdotV, 5.0);
@@ -422,18 +479,38 @@ void main() {
 
     // contact darkening: undersides, wheel wells and bumpers sit in shadow
     float ao = mix(0.30, 1.0, smoothstep(0.05, 0.70, vLocalZ));
+    // Wheel recess: the brake disc and dark backing sit ~4 cm behind the spokes, inside the
+    // tyre bead and the arch. Screen-space AO (3 m radius) cannot resolve that, so it is
+    // analytic: deepest at the hub, easing toward the braking surface at the disc's rim.
+    bool wheelRecess = vWheelRole > 0 && (part == 8 || part == 6);
+    bool brakeDisc = wheelRecess && part == 8 && vWheelRole != 3;
+    if (wheelRecess) {
+        float rrW = length(vWheelLocal.xz);
+        float well = mix(0.06, 0.40, smoothstep(0.04, 0.18, rrW));
+        ao *= mix(1.0, well, clamp(uWheelAO, 0.0, 1.0));
+        if (brakeDisc) albedo *= mix(1.0, 0.55, clamp(uWheelAO, 0.0, 1.0));
+    }
 
     vec3 amb = uAmbColor * mix(0.55, 1.0, N.z * 0.5 + 0.5);
     // Only direct sunlight is shadowed; sky fill, street lamps and emission remain.
     vec3 diff = amb * 0.6 + uSunColor * NdotL * (0.32 * sf);
+    // Street lamps light the cars themselves, not just the road under them: the same
+    // cell grid the ground samples for its spill, plus the compact luminaire highlight a
+    // polished body returns.  Both carry uNightFactor, so daylight costs nothing.
+    vec3 lampSharp = vec3(0.0), lampSoft = vec3(0.0);
     if (uNightFactor > 0.02) {
         vec3 diffE, specE;
         streetLights(vWorld, N, V, diffE, specE);
         diff += diffE * (uNightFactor / 3.14159265);
+        streetLampGlints(vWorld, N, V, lampSharp, lampSoft);
+        lampSharp *= uNightFactor;
+        lampSoft *= uNightFactor;
     }
-    vec3 sunDisc = uSunColor * (pow(RdotL, 1024.0) * 0.8 + pow(RdotL, 64.0) * 0.015) * sf;
+    // Small glossy glint for trim, lens and lamp parts.  The paint, chrome,
+    // piano-black and glazing branches compute their own Fresnel-aware glare.
+    vec3 sunDisc = uSunColor * (pow(RdotL, 1024.0) * 0.8 + pow(RdotL, 64.0) * 0.015) * sunVis;
     vec3 env = skyEnv(R);
-    if (part == 22 || part == 23) {           // translucent lamp lens: clear headlamp cover / red tail cover
+    if (part == 22 || part == 23 || part == 24) { // real transmission: lamp covers and cabin windows
         vec3 Nl = dot(N, V) < 0.0 ? -N : N;   // thin shells are seen from both sides
         float cv = clamp(dot(Nl, V), 0.0, 1.0);
         float fl = pow(1.0 - cv, 5.0);
@@ -442,12 +519,19 @@ void main() {
         float F = 2.0 * F1 / (1.0 + F1);
         float fogL = cityFog(length(uCamPos - vWorld), vWorld.z, uFogNear, uFogFar);
         if (uLensPass == 0) {
-            vec3 T = (part == 23) ? vec3(0.66, 0.17, 0.15) : vec3(0.985, 0.99, 0.99);
+            // Clear front glazing, cool blue-green; progressively darker privacy
+            // glass behind the B pillar.  Lamp covers keep their signal tints.
+            float privacy = smoothstep(-0.20, -0.70, vLocalXY.x);
+            vec3 clearT = mix(vec3(0.90, 0.94, 0.955), vec3(0.38, 0.42, 0.44), privacy);
+            vec3 T = (part == 23) ? vec3(0.66, 0.17, 0.15)
+                     : (part == 24) ? clearT : vec3(0.985, 0.99, 0.99);
             FragColor = vec4(mix(T * (1.0 - F), vec3(1.0), fogL), 1.0);
         } else {
-            float RdL = max(dot(Rl, L), 0.0);
-            vec3 refl = (skyEnv(Rl) * (0.55 + 0.45 * ao) + uSunColor * pow(RdL, 900.0) * 0.9 * sf) * F;
-            vec3 litL = refl;
+            // Sky reflection plus the real solar disc, so a windscreen can flare
+            // white-hot exactly where the sun is mirrored instead of washing out.
+            vec3 refl = skyEnv(Rl) * (0.55 + 0.45 * ao) * F
+                      + solarGlare(Rl, L, 0.012, F, part == 24 ? 1.0 : 0.35) * sunVis;
+            vec3 litL = refl + lampSharp * F;
             // The cover only lights up near the emitters behind it; away from them it stays dark glass.
             float nearP = baked ? vColor.r : 1.0, wideP = baked ? vColor.g : 0.0;
             float nm = lampNight();
@@ -458,7 +542,7 @@ void main() {
                 litL += emissionNits((baked ? TAIL_RED : uTaillightColor), TAILLIGHT_NITS) * nightOn * veil;
                 if ((vFlags & 2) != 0)
                     litL += emissionNits((baked ? TAIL_RED : uTaillightColor), BRAKELIGHT_NITS) * veil * (baked ? 0.30 : 1.0);
-            } else {
+            } else if (part == 22) {
                 float veil = baked ? (0.00025 * nearP + 0.00004 * wideP) * lensK : 0.03;
                 litL += emissionNits(uLedColor, HEADLIGHT_NITS) * nightOn * veil;
             }
@@ -474,17 +558,27 @@ void main() {
     vec3 lit;
     if (part == 1) {                          // glazing: laminated glass, IOR 1.5, tinted, dim cabin behind
         reflectivity = 0.92;
-        float F1 = COAT_F0 + (1.0 - COAT_F0) * fres;              // Schlick dielectric, n = 1.5
+        vec3 Nl = dot(N, V) < 0.0 ? -N : N;                       // two-sided thin shell
+        float cv = clamp(dot(Nl, V), 0.0, 1.0);
+        float fresG = pow(1.0 - cv, 5.0);
+        float F1 = COAT_F0 + (1.0 - COAT_F0) * fresG;             // Schlick dielectric, n = 1.5
         float F  = 2.0 * F1 / (1.0 + F1);                         // front + back surface of the pane
+        vec3 Rg = reflect(-V, Nl);
         float priv = smoothstep(-0.20, -0.70, vLocalXY.x);        // rear glass sits behind the B pillar
-        vec3 tint = mix(vec3(0.78, 0.90, 0.92), vec3(0.22, 0.26, 0.28), priv);
-        float sheen = smoothstep(-0.2, 0.9, R.z);                 // sky shows in the upper part of the glass
-        // what is transmitted: a dim cabin lit from above (headliner bright, footwells dark)
-        vec3 cabin = diff * vec3(0.016, 0.018, 0.021) * mix(0.55, 1.35, smoothstep(0.55, 1.30, vLocalZ));
+        // Cool blue-green front glazing, privacy tint behind the B pillar.  This
+        // is the transmission tint applied to the dim cabin, not the reflection.
+        vec3 tint = mix(vec3(0.56, 0.68, 0.71), vec3(0.15, 0.19, 0.21), priv);
+        float sheen = smoothstep(-0.15, 0.90, Rg.z);              // sky shows in the upper part of the glass
+        vec3 cabin = diff * vec3(0.022, 0.025, 0.029)
+                   * mix(0.45, 1.30, smoothstep(0.55, 1.30, vLocalZ));
         lit = cabin * tint * (1.0 - F)
-              + env * F * (0.60 + 0.40 * sheen)
-              + sunDisc * (0.04 + 0.96 * fres);
-        lit *= mix(0.55, 1.0, ao);
+              + skyEnv(Rg) * (0.55 + 0.45 * sheen) * F
+              + solarGlare(Rg, L, 0.012, F, 1.0) * sunVis
+              + lampSharp * F;
+        // The pane's glassy horizon is envSky() itself: the old additive sun-tinted
+        // rim was never shadowed or cloud-gated, so it drew a bright edge on glass in
+        // shade.  Below the horizon envSky already returns dark street radiance.
+        lit *= mix(0.60, 1.0, ao);
     } else if (part == 2) {                   // tyre rubber: roughness ~0.9, tread + sidewall relief
         vec3 w = vWheelLocal;                                      // wheel-fixed: pattern spins with the tyre
         float tfade = smoothstep(40.0, 5.0, camD);
@@ -501,36 +595,45 @@ void main() {
         float grain = 0.55 + 0.45 * max(dot(Ng, L), 0.0);          // shading grain, not gloss
         lit = rubber * diff * ao * grain
               + skyEnvRough(R, N, 0.90) * 0.018 * (0.4 + fres) * ao
-              + uSunColor * sunLobe(reflect(-V, Ng), L, 0.85) * 0.05 * sf * ao;
-    } else if (part == 5) {                   // metal: chrome trim (mirror) or satin alloy rim
+              + uSunColor * sunLobe(reflect(-V, Ng), L, 0.85) * 0.05 * sunVis * ao
+              + lampSoft * 0.05 * ao;
+    } else if (part == 9 || (part == 5 && wheelPart)) { // satin metal; legacy chrome-tagged rims are alloy
+        vec3 tint = mix(vec3(0.35), vec3(1.0), clamp(linearColor(vColor) * 3.0, vec3(0.0), vec3(1.0)));
+        vec3 F0 = vec3(0.80, 0.81, 0.82) * tint;
+        float resolved = 1.0 - smoothstep(0.8, 3.14159265, wheelFw * 1400.0);
+        float lathe = wheelPart ? 1.0 - 0.035 * (0.5 + 0.5 * sin(wheelRadius * 1400.0) * resolved)
+                                      * (1.0 - smoothstep(4.0, 30.0, camD)) : 1.0;
+        // Roughness ~0.42: a broad, low-energy sheen, not a reflected white-hot solar disc.
+        float sheen = sunLobe(R, L, 0.42) * 3.0
+                    + brushedHighlight(N, V, L, brushTangent(N), 0.4, 0.0) * 0.045;
+        lit = satinEnv(R, N) * mix(F0, vec3(1.0), fres) * lathe * ao
+            + uSunColor * sheen * F0 * NdotL * sunVis * ao
+            + lampSoft * F0 * ao;
+    } else if (part == 5) {                   // genuine chrome / mirror: roughness ~0.03, sharp SSR
         reflectivity = 1.0;
-        if (wheelPart) {                      // alloy: metalness 1, roughness ~0.28, machined concentric lathe lines
-            vec3 F0 = vec3(0.80, 0.81, 0.82);
-            float lathe = 1.0 - 0.07 * (0.5 + 0.5 * sin(length(vWheelLocal.xz) * 1400.0)) * smoothstep(30.0, 4.0, camD);
-            lit = skyEnvRough(R, N, 0.28) * mix(F0, vec3(1.0), fres) * lathe * ao
-                + uSunColor * sunLobe(R, L, 0.28) * F0 * 0.6 * sf * ao;
-        } else {                              // chrome / mirror: metalness 1, roughness ~0.03
-            vec3 F0 = vec3(0.62, 0.63, 0.62);
-            lit = (env + sunDisc) * mix(F0, vec3(1.0), fres) * ao;
-        }
-    } else if (part == 6) {                   // black trim / plastic, or brake disc behind the spokes
+        vec3 F0 = vec3(0.62, 0.63, 0.62);
+        lit = env * mix(F0, vec3(1.0), fres) * ao
+            + solarGlare(R, L, 0.03, 1.0, 0.80) * mix(F0, vec3(1.0), fres) * sunVis * ao
+            + (lampSharp + lampSoft * 0.12) * mix(F0, vec3(1.0), fres) * ao;
+    } else if (part == 6 || brakeDisc) {      // black trim / plastic, or bare cast-iron brake disc
         if (wheelPart) {                      // dark cast iron, machined rings, deep inside the wheel
-            float rr = length(vWheelLocal.xz);
-            float rings = 0.5 + 0.5 * sin(rr * 1600.0) * smoothstep(30.0, 4.0, camD);
+            float resolved = 1.0 - smoothstep(0.8, 3.14159265, wheelFw * 1600.0);
+            float rings = 0.5 + 0.5 * sin(wheelRadius * 1600.0) * resolved * (1.0 - smoothstep(4.0, 30.0, camD));
             vec3 iron = vec3(0.075, 0.070, 0.066) * (0.80 + 0.20 * rings);
             lit = iron * diff * ao * 0.45
                 + skyEnvRough(R, N, 0.50) * 0.045 * ao * 0.6
-                + uSunColor * sunLobe(R, L, 0.50) * 0.05 * sf * ao;
+                + uSunColor * sunLobe(R, L, 0.50) * 0.05 * sunVis * ao;
         } else {
-            lit = albedo * diff * ao + skyEnvRough(R, N, 0.55) * 0.025 * (0.4 + fres) * ao + sunDisc * 0.04;
+            lit = albedo * diff * ao + skyEnvRough(R, N, 0.55) * 0.025 * (0.4 + fres) * ao
+                + sunDisc * 0.04 + lampSoft * 0.30 * ao;
         }
     } else if (part == 7) {                   // licence plate
-        lit = albedo * diff;
+        lit = albedo * diff + lampSoft * 0.15;
     } else if (part == 10) {                  // matte plastic: arches, cladding, skirts, mirror bases
-        lit = albedo * diff * ao * 0.95 + env * 0.012;
+        lit = albedo * diff * ao * 0.95 + env * 0.012 + lampSoft * 0.10 * ao;
     } else if (part == 11) {                  // LED signature (emission applied below); passive = glossy white lens
         float k = 0.08 + 0.55 * fres;
-        lit = mix(albedo * diff, env * ao, k) + sunDisc * k;
+        lit = mix(albedo * diff, env * ao, k) + sunDisc * k + lampSharp * k;
     } else if (part >= 18 && part <= 21) {    // signal lens: dark tinted polycarbonate behind a hood
         int lensState = vFlags & 3;
         bool lensOn = (part == 18 && lensState == 2) || (part == 19 && lensState == 1)
@@ -544,34 +647,50 @@ void main() {
     } else if (part == 12) {                  // piano black: pillars, grille mesh, lamp housings
         reflectivity = 0.72;
         float k = 0.05 + 0.70 * fres;
-        lit = mix(albedo * diff * ao, env * ao, k) + sunDisc * k * ao;
+        lit = mix(albedo * diff * ao, env * ao, k)
+            + solarGlare(R, L, 0.05, max(k, 0.04), 0.65) * sunVis * ao
+            + lampSharp * max(k, 0.03) * ao;
     } else if (part == 13) {                  // panoramic roof glass: darker, more mirror-like, privacy tinted
         reflectivity = 0.96;
-        float F1 = COAT_F0 + (1.0 - COAT_F0) * fres;
-        float k = 0.10 + 0.80 * fres;
-        float sheen = smoothstep(-0.1, 0.9, R.z);
-        lit = mix(vec3(0.006, 0.008, 0.012) * diff, env * (0.22 + 0.40 * sheen), max(k, 2.0 * F1 / (1.0 + F1))) + sunDisc * k;
-        lit *= mix(0.6, 1.0, ao);
+        vec3 Nl = dot(N, V) < 0.0 ? -N : N;
+        float cv = clamp(dot(Nl, V), 0.0, 1.0);
+        float F1 = COAT_F0 + (1.0 - COAT_F0) * pow(1.0 - cv, 5.0);
+        float F  = 2.0 * F1 / (1.0 + F1);
+        vec3 Rg = reflect(-V, Nl);
+        float sheen = smoothstep(-0.10, 0.90, Rg.z);
+        lit = vec3(0.008, 0.011, 0.015) * diff * (1.0 - F)
+              + skyEnv(Rg) * (0.24 + 0.55 * sheen) * F
+              + solarGlare(Rg, L, 0.010, F, 1.0) * sunVis
+              + lampSharp * F;
+        lit *= mix(0.60, 1.0, ao);
     } else if (part == 3 || part == 4 || part == 14) {   // lamp interior: metallised reflector / projector optics
         float facet = baked ? 0.60 + 0.40 * lampHash(floor(vColor.xy * vec2(14.0, 9.0))) : 1.0;
         float shine = (part == 4) ? 0.05 : 0.14;                // chrome headlamp bowl vs red-metallised tail bowl
         float matte = (part == 4) ? 0.55 : 0.22;                // a chrome bowl is a mirror: little diffuse, mostly reflection
         lit = albedo * diff * ao * matte * facet
             + skyEnvRough(R, N, 0.30) * shine * (0.35 + 0.65 * fres) * ao * facet
-            + sunDisc * shine * 0.9 * facet;
+            + sunDisc * shine * 0.9 * facet
+            + lampSharp * shine * 0.35 * facet;
     } else {                                  // layered automotive paint (0 = instance colour, 8 = fixed)
         bool caliper = vWheelRole == 3;
         if (part == 0 || part == 8) reflectivity = 0.60;
         float gloss  = clamp(uPaintCoat.x, 0.0, 1.0);
         float lum    = dot(albedo, PHOTO_LUMA);
+        float chroma = max(albedo.r, max(albedo.g, albedo.b))
+                     - min(albedo.r, min(albedo.g, albedo.b));
         float variant = paintHash(vec3(dot(vColor, vec3(97.0, 51.0, 29.0)), 7.3, 3.1));
+        // Neutral bright paint (white, light silver) is a plain solid finish.  A
+        // pearl flip-flop needs coloured pigment to shift; on white it only reads
+        // as cream/pearl rather than the intended showroom white.
+        float neutralLight = (1.0 - smoothstep(0.025, 0.080, chroma))
+                           * smoothstep(0.45, 0.65, lum);
         // Finish per colour: ~20 % single-stage solid, ~58 % two-coat metallic, ~22 % tri-coat pearl.
-        float solid = (part == 0 && variant < 0.20) ? 1.0 : 0.0;
-        float tri   = (part == 0 && variant > 0.78) ? 1.0 : 0.0;
+        float solid = ((part == 0 && variant < 0.20) || neutralLight > 0.5) ? 1.0 : 0.0;
+        float tri   = (part == 0 && variant > 0.78 && neutralLight < 0.5) ? 1.0 : 0.0;
         float met   = (part == 0 ? 1.0 : 0.6) * clamp(uPaintCoat.z, 0.0, 2.0)
                     * mix(0.55, 1.0, smoothstep(0.03, 0.22, lum)) * (1.0 - solid);
         float pearl = (part == 0 ? 1.0 : 0.0) * clamp(uPaintCoat.w, 0.0, 1.0)
-                    * max(smoothstep(0.20, 0.55, lum), tri);
+                    * max(smoothstep(0.20, 0.55, lum), tri) * (1.0 - neutralLight);
         if (caliper) { met = 0.0; pearl = 0.0; }
         float flakeFade = smoothstep(80.0, 12.0, camD);           // micro-normals resolve up close only
         float peelFade  = smoothstep(60.0, 6.0, camD);
@@ -597,26 +716,36 @@ void main() {
         float coatF = COAT_F0 + (1.0 - COAT_F0) * pow(1.0 - cosV, 5.0);
         vec3 Rc = reflect(-V, Nc);
         float coatPow = mix(256.0, 4096.0, gloss * gloss);        // 0.95-0.98: sharp automotive highlight (roughness ~0.02)
-        // Both lobes are scaled to the solar disc's reflected energy (sunDisc is a 0.8
-        // peak), not to the direct irradiance, so a clear coat glint stays a highlight.
-        float coatSun = pow(max(dot(Rc, L), 0.0), coatPow) * 0.10 * sf;
-        float flakeSun = pow(max(dot(reflect(-V, Ng), L), 0.0), 1200.0) * sf * met
+        // Broad coat lobe (a soft sheen around the sun) plus the actual solar
+        // disc: the latter is scene-linear HDR, so bloom, anamorphic streak and
+        // starburst spread it into the FH6-style glare.  The clear coat is
+        // colourless, so white paint keeps a neutral white glare.
+        float coatSun = pow(max(dot(Rc, L), 0.0), coatPow) * 0.10 * sunVis;
+        float coatRough = mix(0.045, 0.14, 1.0 - gloss);
+        vec3 coatGlare = solarGlare(Rc, L, coatRough, coatF, 1.0) * sunVis;
+        float flakeSun = pow(max(dot(reflect(-V, Ng), L), 0.0), 1200.0) * sunVis * met
                        * 0.05 * mix(0.25, 1.0, flakeFade);
-        float glitterSun = pow(max(dot(reflect(-V, Ngl), L), 0.0), 500.0) * sf * met * glit
+        float glitterSun = pow(max(dot(reflect(-V, Ngl), L), 0.0), 500.0) * sunVis * met * glit
                          * 0.12 * flakeFade;
-        float farSheen = sf * (1.0 - flakeFade) * met * 0.004;
+        float farSheen = sunVis * (1.0 - flakeFade) * met * 0.004;
         // Base layer: pigment diffuse plus metallic flakes mirroring the sky through the coat.
         vec3 baseLit = paint * diff * ao;
         if (met > 0.0) {
-            vec3 Rf = reflect(-V, Ngl);
-            vec3 flakeEnv = skyEnvRough(Rf, Ngl, 0.25);
+            // Flakes mirror a *blurred* sky, not a second sharp reflection.  Sampling the
+            // environment through each flake's own +-0.35 rad tilt turned the sun's aureole
+            // in the sky table into scattered white sparkle on a panel that is merely
+            // reflecting the sky -- including the shaded flank.  The real glint stays in
+            // flakeSun / glitterSun, which are shadow- and cloud-gated.
+            vec3 flakeEnv = skyEnvRough(Rc, Nc, 0.35);
             baseLit = mix(baseLit, paint * flakeEnv * 1.1 * ao, 0.20 * met);
         }
         // Clear coat is colourless: it reflects the (orange-peel perturbed) world, over the base.
         vec3 coatEnv = skyEnv(Rc) * ao;
         lit = mix(baseLit, coatEnv, coatF)
-              + sunDisc * coatF * 0.35 * ao
-              + uSunColor * (coatSun + flakeSun + glitterSun + farSheen) * ao;
+              + coatGlare * mix(0.55, 1.0, ao)
+              + uSunColor * (coatSun + flakeSun + glitterSun + farSheen) * ao
+              + lampSharp * coatF * mix(0.35, 1.0, ao)
+              + lampSoft * 0.05 * ao;
     }
 
     vec3 pat = vec3(1.0, 0.0, 0.0);           // unbaked lamps keep the old flat emission

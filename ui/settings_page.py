@@ -14,12 +14,16 @@ import math
 from . import icons
 from . import theme as T
 from .menu_ui import Page, frame_rect
-from .ui_kit import (alpha, button, chip, close_button, ease_out, heading, inside, keycaps, mix,
-                     panel_header, scrollbar, segmented, slider, stepper, toggle, toggle_rect)
+from .ui_kit import (alpha, button, chip, close_button, divider, ease_out_expo, focus_ring, group, heading,
+                     icon_tile, inside, keycaps, mix, panel_header, scrollbar, segmented, separator, sheet,
+                     slider, spring, stepper, surface, toggle, toggle_rect)
 
-ROW_H, ROW_H_PLAIN = 60.0, 48.0
-SECTION_H, SECTION_GAP = 34.0, 10.0
-FOOTER_H = 64.0
+ROW_H, ROW_H_PLAIN = 58.0, 48.0
+SECTION_H, SECTION_GAP = 30.0, 16.0
+FOOTER_H = 60.0
+GROUP_PAD = 16.0      # inner horizontal padding of a grouped card
+TILE_CYCLE = (T.TILE_BLUE, T.TILE_PURPLE, T.TILE_RED, T.TILE_ORANGE, T.TILE_GREEN, T.TILE_TEAL,
+              T.TILE_INDIGO, T.TILE_PINK, T.TILE_GRAY)
 
 
 class SettingsPage(Page):
@@ -76,11 +80,11 @@ class SettingsPage(Page):
         fx, fy, fw, fh = frame_rect(w, h, 1120, 700)
         fy += self.menu.oy()
         compact = fw < 760
-        rail_w = 68.0 if compact else 224.0
-        cx = fx + 14 + rail_w + 26
-        cw = fx + fw - 30 - cx
-        vy = fy + 94
-        vh = fh - 94 - FOOTER_H
+        rail_w = 64.0 if compact else 216.0
+        cx = fx + 20 + rail_w + 28
+        cw = fx + fw - 32 - cx
+        vy = fy + 96
+        vh = fh - 96 - FOOTER_H
         return dict(frame=(fx, fy, fw, fh), compact=compact, rail_w=rail_w, cx=cx, cw=cw,
                     vy=vy, vh=vh, footer_y=fy + fh - FOOTER_H)
 
@@ -90,10 +94,10 @@ class SettingsPage(Page):
         if cat.custom == "controls":
             return self._plan_controls(ui, cw)
         for sec in cat.sections:
-            plan.append(("section", sec.title, y, SECTION_H))
+            heights = [ROW_H if r.desc else ROW_H_PLAIN for r in sec.rows]
+            plan.append(("section", (sec.title, sum(heights)), y, SECTION_H))
             y += SECTION_H
-            for s in sec.rows:
-                rh = ROW_H if s.desc else ROW_H_PLAIN
+            for s, rh in zip(sec.rows, heights):
                 plan.append(("row", s, y, rh))
                 y += rh
             y += SECTION_GAP
@@ -103,10 +107,10 @@ class SettingsPage(Page):
         shortcuts = getattr(self.menu.host, "SHORTCUTS", ())
         two = cw >= 700
         cols = 2 if two else 1
-        row = 30.0
+        row = 34.0
         key_w = max((self._key_width(ui, key) for _, rows in shortcuts for key, _ in rows), default=60.0) + 16
         # distribute groups over columns, balancing heights
-        heights = [26.0 + len(rows) * row + 14.0 for _, rows in shortcuts]
+        heights = [26.0 + len(rows) * row + 12.0 + 18.0 for _, rows in shortcuts]
         columns, col_h = [[] for _ in range(cols)], [0.0] * cols
         for (title, rows), gh in zip(shortcuts, heights):
             k = col_h.index(min(col_h))
@@ -117,24 +121,24 @@ class SettingsPage(Page):
 
     @staticmethod
     def _key_width(ui, key):
-        from .maps_ui import keycaps as kc
+        from .ui_kit import keycaps as kc
         return kc(ui, 0, 0, key, 11, dry=True)
 
     # ------------------------------------------------------------------ draw
     def draw(self, ui, w, h, mouse):
         g = self._geometry(w, h)
         fx, fy, fw, fh = g["frame"]
-        cats = self.store.categories
         cat = self.category
-        ui.container(fx, fy, fw, fh, "popup", r=T.R_PANEL + 2)
+
+        sheet(ui, fx, fy, fw, fh)
         self.hits.add((fx, fy, fw, fh), "panel")
+
         self._draw_rail(ui, g, mouse)
 
         cx, cw = g["cx"], g["cw"]
-        panel_header(ui, cx, fy + 22, cw - 48, cat.label, cat.blurb, icon=cat.icon)
-        cr = close_button(ui, fx + fw - 28 - 32, fy + 22, mouse)
+        panel_header(ui, cx, fy + 26, cw - 48, cat.label, cat.blurb)
+        cr = close_button(ui, fx + fw - 32 - 32, fy + 30, mouse)
         self.hits.add(cr, "close")
-        ui.divider(cx, fy + 84, cw)
 
         plan, total = self._plan(cat, ui, cw)
         vy, vh = g["vy"], g["vh"]
@@ -145,9 +149,9 @@ class SettingsPage(Page):
         if self._reveal is not None and self._reveal in self.row_pos:
             ry, rh = self.row_pos[self._reveal]
             if ry < off:
-                off = ry - 6
+                off = ry - 40
             elif ry + rh > off + vh:
-                off = ry + rh - vh + 6
+                off = ry + rh - vh + 12
             off = max(0.0, min(self.scroll_max, off))
         self._reveal = None
         self.scroll[cat.id] = off
@@ -156,158 +160,176 @@ class SettingsPage(Page):
         interactive = self._interactive()
         self.focus = max(0, min(self.focus, max(0, len(interactive) - 1)))
         focused = interactive[self.focus] if interactive else None
-        for kind, obj, y, rh in plan:
+
+        for i, (kind, obj, y, rh) in enumerate(plan):
             top = vy + y - off
-            if top > vy + vh or top + rh < vy:
-                continue                    # fully outside: skip the work, the scissor does the rest
+            extent = rh + (obj[1] if kind == "section" else 0.0)
+            if top > vy + vh or top + extent < vy:
+                continue
             if kind == "section":
-                heading(ui, obj, cx, top + 14)
-                ui.divider(cx + ui.text_w(obj.upper(), T.T_CAPTION, weight="semibold") + 12, top + 21,
-                           cw - ui.text_w(obj.upper(), T.T_CAPTION, weight="semibold") - 12)
+                title, gh = obj
+                if title:
+                    heading(ui, title, cx + 6, top + 4)
+                group(ui, cx, top + rh, cw, gh)
             elif kind == "row":
-                self._draw_row(ui, obj, (cx, top, cw, rh), mouse, obj is focused)
+                last = i + 1 >= len(plan) or plan[i + 1][0] != "row"
+                self._draw_row(ui, obj, (cx, top, cw, rh), mouse, obj is focused, last)
             else:
                 self._draw_controls(ui, obj, cx, top, cw, vy, vh)
+
         ui.pop_clip()
-        scrollbar(ui, cx + cw + 10, vy, vh, vh, total, off)
+        scrollbar(ui, cx + cw + 12, vy, vh, vh, total, off)
 
         self._draw_footer(ui, g, mouse, cat)
 
     def _draw_rail(self, ui, g, mouse):
         fx, fy, fw, fh = g["frame"]
         rail_w, compact = g["rail_w"], g["compact"]
-        rx, ry, rh = fx + 14, fy + 14, fh - 28
-        ui.box(rx, ry, rail_w, rh, T.R_PANEL - 2, (0.0, 0.0, 0.0, 0.26), T.BORDER_SOFT)
-        if compact:
-            icons.draw(ui, "sliders", rx + rail_w / 2, ry + 32, 22, T.SIGNAL, 1.7)
-        else:
-            ui.box(rx + 14, ry + 14, 34, 34, 9, T.ACCENT_SOFT, alpha(T.ACCENT, 0.55))
-            icons.draw(ui, "sliders", rx + 31, ry + 31, 20, T.TEXT, 1.6)
-            ui.text("Settings", rx + 58, ry + 21, T.T_LABEL + 1, T.TEXT, weight="bold")
-        item_h, gap = 44.0, 4.0
-        y = ry + 62
+        rx, ry = fx + 20, fy + 26
+
+        if not compact:
+            ui.text("Settings", rx + 8, ry + 4, T.T_TITLE_3, T.TEXT_PRIMARY, weight="bold")
+
+        item_h, gap = 42.0, 3.0
+        y = ry + (0 if compact else 52)
+
         for i, c in enumerate(self.store.categories):
-            r = (rx + 8, y + i * (item_h + gap), rail_w - 16, item_h)
+            r = (rx, y + i * (item_h + gap), rail_w, item_h)
             sel = i == self.cat
-            hov = ui.anim(("set_cat", i), float(inside(r, *mouse)), 18.0)
+            hov = spring(ui, ("set_cat", i), float(inside(r, *mouse)), T.SPRING_GENTLE)
             self.hits.add(r, "cat", i)
+
             if sel:
-                ui.box(*r, T.R_BUTTON, T.ROW_FOCUS, alpha(T.SIGNAL, 0.35))
-                ui.box(r[0], r[1] + 10, 3.0, r[3] - 20, 1.5, T.SIGNAL)
+                ui.box(*r, 12, (1.0, 1.0, 1.0, 0.11))
             elif hov > 0.01:
-                ui.box(*r, T.R_BUTTON, ((1, 1, 1, 0.05 * hov), (1, 1, 1, 0.025 * hov)))
-            col = T.TEXT if sel else mix(T.TEXT_3, T.TEXT, hov)
-            icons.draw(ui, c.icon, r[0] + (r[2] / 2 if compact else 24), r[1] + r[3] / 2, 20,
-                       T.SIGNAL if sel else col, 1.6)
+                ui.box(*r, 12, (1.0, 1.0, 1.0, 0.06 * hov))
+
+            tile = TILE_CYCLE[i % len(TILE_CYCLE)]
+            ts = 28.0
+            tx = r[0] + (r[2] - ts) / 2 if compact else r[0] + 8
+            icon_tile(ui, tx, r[1] + (r[3] - ts) / 2, ts, c.icon, tile)
             if not compact:
-                ui.text_c(ui.fit(c.label, T.T_BASE, r[2] - 56), r[0] + 44, r[1] + r[3] / 2, T.T_BASE, col,
-                          weight="semibold" if sel else "medium")
-        if not compact and ry + rh - 28 > y + len(self.store.categories) * (item_h + gap):
-            kw = keycaps(ui, rx + 14, ry + rh - 34, "Q", 11)
-            kw2 = keycaps(ui, rx + 14 + kw + 4, ry + rh - 34, "E", 11)
-            ui.text_c("Switch page", rx + 14 + kw + kw2 + 12, ry + rh - 23.5, T.T_SMALL, T.TEXT_3, weight="medium")
+                ui.text_c(ui.fit(c.label, T.T_CALLOUT, r[2] - 56), r[0] + 46, r[1] + r[3] / 2, T.T_CALLOUT,
+                          T.TEXT_PRIMARY if sel else T.TEXT_SECONDARY, weight="semibold" if sel else "medium")
+
+        if not compact and ry + fh - 52 - 36 > y + len(self.store.categories) * (item_h + gap):
+            by = fy + fh - 20 - 21
+            kw = keycaps(ui, rx + 8, by, "Q", 11)
+            kw2 = keycaps(ui, rx + 8 + kw + 4, by, "E", 11)
+            ui.text_c("Switch page", rx + 8 + kw + kw2 + 12, by + 10.5, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="medium")
 
     # ------------------------------------------------------------------ rows
-    def _draw_row(self, ui, s, rect, mouse, focused):
-        x, y, w, h = rect
+    def _draw_row(self, ui, s, rect, mouse, focused, last=False):
+        gx, y, gw, h = rect                       # the row spans the whole group width
+        x, w = gx + GROUP_PAD, gw - 2 * GROUP_PAD
         enabled = s.is_enabled()
-        hov = ui.anim(("set_row", s.id), float(inside(rect, *mouse) and enabled and inside(self.view, *mouse)), 18.0)
+        hov = spring(ui, ("set_row", s.id),
+                     float(inside(rect, *mouse) and enabled and inside(self.view, *mouse)), T.SPRING_GENTLE)
+
         if enabled:
             self.hits.add(rect, "row", s, clip=self.view)
         if focused and enabled:
-            ui.box(x - 10, y + 2, w + 20, h - 4, T.R_BUTTON, T.ROW_FOCUS)
-            ui.box(x - 10, y + 12, 3.0, h - 24, 1.5, T.SIGNAL)
+            ui.box(gx + 6, y + 2, gw - 12, h - 4, 12, (1.0, 1.0, 1.0, 0.085))
         elif hov > 0.01:
-            ui.box(x - 10, y + 2, w + 20, h - 4, T.R_BUTTON, ((1, 1, 1, 0.045 * hov), (1, 1, 1, 0.02 * hov)))
+            ui.box(gx + 6, y + 2, gw - 12, h - 4, 12, (1.0, 1.0, 1.0, 0.045 * hov))
+        if not last:
+            separator(ui, x, y + h - 0.5, w)
+
         ctrl_w = min(340.0, w * 0.5)
         label_w = w - ctrl_w - 24
-        col = T.TEXT if enabled else T.TEXT_4
-        ty = y + (11 if s.desc else 14)
-        lw = ui.text(ui.fit(s.label, T.T_BASE, label_w, weight="semibold"), x, ty, T.T_BASE, col, weight="semibold")
+        col = T.TEXT_PRIMARY if enabled else T.TEXT_QUATERNARY
+        ty = y + (10 if s.desc else 14)
+
+        lw = ui.text(ui.fit(s.label, T.T_CALLOUT, label_w, weight="medium"), x, ty, T.T_CALLOUT, col, weight="medium")
         if s.note:
-            chip(ui, x + min(lw, label_w) + 10, ty - 1, s.note, T.TEXT_3, T.T_CAPTION - 1, h=18, pad=7)
+            chip(ui, x + min(lw, label_w) + 10, ty, s.note, T.TEXT_TERTIARY, T.T_CAPTION_1, h=18, pad=7)
         if s.desc:
-            ui.text(ui.fit(s.desc, T.T_SMALL, label_w), x, y + 33, T.T_SMALL, T.TEXT_3 if enabled else T.TEXT_4,
-                    weight="regular")
+            ui.text(ui.fit(s.desc, T.T_CAPTION_2, label_w), x, y + 33, T.T_CAPTION_2,
+                    T.TEXT_TERTIARY if enabled else T.TEXT_QUATERNARY, weight="regular")
+
         ctrl = (x + w - ctrl_w, y, ctrl_w, h)
         key = s.id
+
         if s.kind == "toggle":
             toggle(ui, ctrl, bool(s.value()), key=key, focus=focused and enabled, enabled=enabled)
             if enabled:
                 self.hits.add(toggle_rect(ctrl), "toggle", s, clip=self.view)
         elif s.kind == "slider":
-            vw = 66.0
-            track = (ctrl[0] + 8, y, ctrl_w - vw - 16, h)
+            vw = 56.0
+            track = (ctrl[0] + 12, y, ctrl_w - vw - 24, h)
             self.slider_rects[s.id] = track
-            hv = ui.anim(("set_sl", s.id), float(enabled and (self.drag_id is s.id or inside(track, *mouse))), 18.0)
+            hv = spring(ui, ("set_sl", s.id), float(enabled and (self.drag_id is s.id or inside(track, *mouse))),
+                        T.SPRING_GENTLE)
             slider(ui, track, s.fraction(), key=key, hover=hv, focus=focused and enabled, enabled=enabled)
-            ui.text_c(s.text(), x + w, y + h / 2, T.T_BODY, T.TEXT_2 if enabled else T.TEXT_4,
-                      anchor="right", weight="semibold")
+            ui.text_c(s.text(), x + w, y + h / 2, T.T_BODY, T.TEXT_SECONDARY if enabled else T.TEXT_QUATERNARY,
+                      anchor="right", weight="medium")
             if enabled:
-                self.hits.add((track[0] - 8, y, track[2] + 16, h), "slider", s, clip=self.view)
+                self.hits.add((track[0] - 12, y, track[2] + 24, h), "slider", s, clip=self.view)
         elif s.kind == "choice":
             self._draw_choice(ui, s, ctrl, mouse, focused, enabled)
         elif s.kind == "action":
-            bw = max(96.0, ui.text_w(s.button, T.T_BODY, weight="semibold") + 32)
+            bw = max(88.0, ui.text_w(s.button, T.T_BODY, weight="semibold") + 32)
             r = (x + w - bw, y + (h - 32) / 2, bw, 32.0)
-            button(ui, r, s.button, mouse, key=("act", s.id), kind="ghost", focus=focused and enabled,
+            button(ui, r, s.button, mouse, key=("act", s.id), kind="secondary", focus=focused and enabled,
                    disabled=not enabled, size=T.T_BODY)
             if enabled:
                 self.hits.add(r, "action", s, clip=self.view)
         else:                                       # info
-            ui.text_c(ui.fit(s.text(), T.T_BASE, ctrl_w), x + w, y + h / 2, T.T_BASE, T.TEXT_2,
-                      anchor="right", weight="medium")
-        ui.divider(x, y + h - 1, w, (1, 1, 1, 0.05))
+            ui.text_c(ui.fit(s.text(), T.T_BODY, ctrl_w), x + w, y + h / 2, T.T_BODY, T.TEXT_SECONDARY,
+                      anchor="right", weight="regular")
 
     def _draw_choice(self, ui, s, ctrl, mouse, focused, enabled):
         labels = [lbl for _, lbl in s.choices]
         idx = s.choice_index()
-        need = sum(ui.text_w(t, T.T_SMALL, weight="semibold") + 22 for t in labels) + 6
+        need = sum(ui.text_w(t, T.T_CAPTION_2, weight="semibold") + 26 for t in labels) + 6
         if len(labels) <= 6 and need <= ctrl[2]:
-            rects = segmented(ui, ctrl, labels, idx, mouse, key=s.id, focus=focused and enabled, enabled=enabled)
+            rects = segmented(ui, ctrl, labels, idx, mouse, key=s.id, focus=focused and enabled, enabled=enabled,
+                              size=T.T_CAPTION_2)
             if enabled:
                 for i, r in enumerate(rects):
                     self.hits.add(r, "seg", (s, i), clip=self.view)
         else:
             arrows = stepper(ui, ctrl, labels[idx] if labels else "", mouse, key=s.id,
-                             focus=focused and enabled, enabled=enabled, width=min(230.0, ctrl[2]))
+                             focus=focused and enabled, enabled=enabled, width=min(230.0, ctrl[2]),
+                             size=T.T_CAPTION_2)
             if enabled:
                 self.hits.add(arrows[0], "step", (s, -1), clip=self.view)
                 self.hits.add(arrows[1], "step", (s, +1), clip=self.view)
 
     def _draw_controls(self, ui, spec, cx, top, cw, vy, vh):
         cols, row, key_w = spec["cols"], spec["row"], spec["key_w"]
-        gap = 36.0
+        gap = 24.0
         col_w = (cw - gap * (cols - 1)) / cols
         for ci, groups in enumerate(spec["columns"]):
             x = cx + ci * (col_w + gap)
             for title, rows, y0 in groups:
                 y = top + y0
-                if y < vy + vh and y + 20 > vy:
-                    heading(ui, title, x, y)
-                y += 26
-                for key, what in rows:
-                    if y < vy + vh and y + row > vy:
-                        keycaps(ui, x, y + (row - 21) / 2, key, 11)
-                        ui.text_c(ui.fit(what, T.T_BODY, col_w - key_w), x + key_w, y + row / 2, T.T_BODY,
-                                  T.TEXT_2, weight="regular")
-                    y += row
-            if ci == 0 and cols == 2:
-                ui.vdivider(x + col_w + gap / 2, top, spec_height(spec))
+                gh = len(rows) * row + 12
+                if y < vy + vh and y + 26 + gh > vy:
+                    heading(ui, title, x + 6, y + 2)
+                    group(ui, x, y + 26, col_w, gh)
+                    for i, (key, what) in enumerate(rows):
+                        ry = y + 26 + 6 + i * row
+                        keycaps(ui, x + 14, ry + (row - 21) / 2, key, 11)
+                        ui.text_c(ui.fit(what, T.T_BODY, col_w - 14 - key_w - 14), x + 14 + key_w, ry + row / 2,
+                                  T.T_BODY, T.TEXT_SECONDARY, weight="regular")
+                        if i < len(rows) - 1:
+                            separator(ui, x + 14, ry + row - 0.5, col_w - 28)
 
     def _draw_footer(self, ui, g, mouse, cat):
         fx, fy, fw, fh = g["frame"]
         cx, cw, fyy = g["cx"], g["cw"], g["footer_y"]
-        ui.divider(cx, fyy + 6, cw)
+
         if cat.custom is None:
-            r = (cx, fyy + 16, 168.0, 34.0)
+            r = (cx - 4, fyy + 10, 160.0, 36.0)
             self.hits.add(r, "reset")
-            button(ui, r, "Reset this page", mouse, key="set_reset", kind="ghost", icon="reset", size=T.T_BODY)
+            button(ui, r, "Reset page", mouse, key="set_reset", kind="tertiary", icon="reset", size=T.T_BODY)
+
         txt = "Changes apply instantly and are saved automatically"
         if cat.custom == "controls":
             txt = "Hold Q while on foot to profile nearby people"
-        ui.text_c(ui.fit(txt, T.T_SMALL, cw - 190), cx + cw, fyy + 33, T.T_SMALL, T.TEXT_4,
-                  anchor="right", weight="medium")
+        ui.text_c(ui.fit(txt, T.T_CAPTION_2, cw - 180), cx + cw, fyy + 28, T.T_CAPTION_2, T.TEXT_TERTIARY,
+                  anchor="right", weight="regular")
 
     # ------------------------------------------------------------------ input
     def prompts(self):

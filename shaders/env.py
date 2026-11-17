@@ -52,7 +52,9 @@ vec3 envSky(vec3 R, vec3 L) {
         env += urbanSky(R, uNightFactor, uSkyGlow);
     }
 
-    env += celestialSky(R, normalize(uSkySunDir));
+    // Reflected sky: keep the galaxy and the moon's smooth halo, but never its disc.
+    // A per-pixel normal makes the disc alias into sparkle on paint and glazing.
+    env += celestialSkyReflected(R, normalize(uSkySunDir));
     env = weatherSky(env, R, normalize(uSkySunDir));
     // A narrow ABOVE-horizon transition avoids a hard reflection seam without
     // showing any sky below zero elevation (smoothstep edges are ordered).

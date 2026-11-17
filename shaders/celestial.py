@@ -34,7 +34,11 @@ vec3 galacticSky(vec3 dir) {
                + emissionNits(vec3(.91, .81, .64), .014 * bulge);
     return light * (.42 + .78 * grain) * (1. - dust * .62) * uMilkyWayVisibility;
 }
-vec3 lunarSky(vec3 dir, vec3 sunDir) {
+// discGain 1 = the sky pass, 0 = a reflected skydome (lunarSkyGain).  Reflections are sampled per
+// pixel through an orange-peel / flake normal, so a hard-edged disc there bursts into
+// single-pixel sparkle wherever the mirrored direction crosses it; the smooth halo is
+// all a reflected moon can contribute anyway.
+vec3 lunarSkyGain(vec3 dir, vec3 sunDir, float discGain) {
     if (uMoonIntensity <= .001 || uMoonRadius <= 0. || uSkyMoonDir.z < -.025) return vec3(0.);
     vec3 moonDir = normalize(uSkyMoonDir);
     vec3 pole = transpose(uWorldToEquatorial) * vec3(0., 0., 1.);
@@ -45,7 +49,8 @@ vec3 lunarSky(vec3 dir, vec3 sunDir) {
     vec2 p = vec2(dot(dir, east), dot(dir, north)) / uMoonRadius;
     float radius2 = dot(p, p);
     float aa = max(fwidth(radius2), .005);
-    float disc = (1. - smoothstep(1. - aa, 1. + aa, radius2)) * step(0., dot(dir, moonDir));
+    float disc = (1. - smoothstep(1. - aa, 1. + aa, radius2))
+               * step(0., dot(dir, moonDir)) * discGain;
     float mu = max(dot(dir, moonDir), 0.);
     float halo = pow(mu, 850.) * nits(.035) * uMoonBrightness;
     vec3 surface = east * p.x + north * p.y - moonDir * sqrt(max(1. - radius2, 0.));
@@ -65,8 +70,15 @@ vec3 lunarSky(vec3 dir, vec3 sunDir) {
     return vec3(.94, .96, 1.) * attenuation * uMoonIntensity
          * (disc * nits(2500.) * albedo * (lit * phaseGain + earthshine) + halo);
 }
+vec3 lunarSky(vec3 dir, vec3 sunDir) {
+    return lunarSkyGain(dir, sunDir, 1.0);
+}
 vec3 celestialSky(vec3 dir, vec3 sunDir) {
     return galacticSky(dir) + lunarSky(dir, sunDir);
+}
+// Same sky without resolvable point sources, for mirror-direction lookups.
+vec3 celestialSkyReflected(vec3 dir, vec3 sunDir) {
+    return galacticSky(dir) + lunarSkyGain(dir, sunDir, 0.0);
 }
 #endif
 """

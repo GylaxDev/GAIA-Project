@@ -20,9 +20,16 @@ import math
 
 from . import icons
 from . import theme as T
+from . import ui_kit
 from ..core.config import CITIES
-from .ui_kit import (alpha, brackets, button, chip, close_button, ease_out, heading, inside, keycaps,
-                     logo_mark, mix, panel_header, paragraph, prompt_bar, scrim)
+from .ui_kit import (alpha, button, card, chip, close_button, divider, ease_out_cubic, ease_out_expo,
+                     focus_ring, glass, group, heading, icon_tile, inside, keycaps, logo_mark, material_box, mix,
+                     panel_header, paragraph, prompt_bar, scrim, scrollbar, separator, sheet, spring, surface)
+
+# Re-export for other modules
+from .ui_kit import (button as _button, toggle, toggle_rect, slider, segmented, stepper,
+                     chip as _chip, close_button as _close_button, logo_mark as _logo_mark,
+                     panel_header as _panel_header, prompt_bar as _prompt_bar, scrim as _scrim)
 
 
 class HitMap:
@@ -112,19 +119,28 @@ class ConfirmDialog:
         self.rects = {}
 
     def draw(self, ui, w, h, mouse):
-        ui.rect(0, 0, w, h, (0.0, 0.0, 0.0, 0.55))
-        pw, ph = min(440, w - 48), 190
+        ui.rect(0, 0, w, h, (0.0, 0.0, 0.02, 0.46))
+        pw = min(340, w - 48)
+        lines = ui_kit.wrap(ui, self.message, T.T_BODY, pw - 56, "regular", 3)
+        lead = 20
+        ph = 28 + 24 + 10 + len(lines) * lead + 24 + 44 + 22
         x, y = (w - pw) / 2, (h - ph) / 2 - 20
-        ui.container(x, y, pw, ph, "popup", r=T.R_PANEL + 2)
-        ui.text(self.title, x + 26, y + 24, T.T_TITLE + 2, T.TEXT, weight="bold")
-        paragraph(ui, self.message, x + 26, y + 60, pw - 52, T.T_BASE, T.TEXT_2, weight="regular", max_lines=3)
-        bw, bh = 128, 38
-        no_r = (x + pw - 26 - bw * 2 - 12, y + ph - 26 - bh, bw, bh)
-        yes_r = (x + pw - 26 - bw, y + ph - 26 - bh, bw, bh)
+
+        glass(ui, x, y, pw, ph, T.R_POPUP + 2, "raised")
+        ui.text(self.title, x + pw / 2, y + 28, T.T_TITLE_1 + 1, T.TEXT_PRIMARY, anchor="center", weight="bold")
+        paragraph(ui, self.message, x + pw / 2, y + 28 + 24 + 10, pw - 56, T.T_BODY, T.TEXT_SECONDARY,
+                  lead=lead, max_lines=3, anchor="center")
+
+        gap, bh = 10, 44
+        bw = (pw - 44 - gap) / 2
+        by = y + ph - 22 - bh
+        no_r = (x + 22, by, bw, bh)
+        yes_r = (x + 22 + bw + gap, by, bw, bh)
         self.rects = {"no": no_r, "yes": yes_r}
-        button(ui, no_r, self.no, mouse, key="cf_no", focus=self.focus == 1)
-        button(ui, yes_r, self.yes, mouse, key="cf_yes", kind="danger" if self.danger else "accent",
-               focus=self.focus == 0)
+
+        button(ui, no_r, self.no, mouse, key="cf_no", kind="secondary", focus=self.focus == 1, size=T.T_BODY + 1)
+        button(ui, yes_r, self.yes, mouse, key="cf_yes",
+               kind="destructive" if self.danger else "primary", focus=self.focus == 0, size=T.T_BODY + 1)
 
     def key(self, ev, pg, menu):
         k = ev.key
@@ -249,16 +265,20 @@ class MenuSystem:
             return
         page.hits.clear()
         page.mouse = mouse
-        fade = ease_out(self.t / 0.22)
+        ui_kit.POINTER["down"] = self.pressed
+
+        # Smooth page entrance animation
+        fade = ease_out_expo(self.t / 0.22)
         scrim(ui, w, h, fade, flat=self.page != "main")
         page.draw(ui, w, h, mouse)
         prompt_bar(ui, w, h, page.prompts())
+
         if self.confirm is not None:
             self.confirm.draw(ui, w, h, mouse)
 
     def oy(self):
         """Vertical slide-in offset for the current page (logical px)."""
-        return (1.0 - ease_out(self.t / 0.28)) * 16.0
+        return (1.0 - ease_out_expo(self.t / 0.28)) * 16.0
 
     # --------------------------------------------------------------- input
     def handle(self, ev, pg, pos):
@@ -319,7 +339,7 @@ class MainPage(Page):
         ("resume", "Start exploring", "Jump into the city", "play"),
         ("garage", "Garage", "Spawn and drive any vehicle", "car"),
         ("travel", "Travel", "Visit a city or open the world map", "globe"),
-        ("settings", "Settings", "Graphics, camera, world, audio and more", "sliders"),
+        ("settings", "Settings", "Graphics, camera, world and more", "sliders"),
         ("controls", "Controls", "Keyboard and mouse reference", "keyboard"),
         ("about", "About", "Version, data sources and credits", "info"),
         ("quit", "Quit", "Close OSM 3D", "power"),
@@ -347,83 +367,92 @@ class MainPage(Page):
         return out
 
     # ------------------------------------------------------------- drawing
+    TILES = {"resume": T.TILE_BLUE, "garage": T.TILE_ORANGE, "travel": T.TILE_GREEN, "settings": T.TILE_GRAY,
+             "controls": T.TILE_INDIGO, "about": T.TILE_TEAL, "quit": T.TILE_RED}
+
     def draw(self, ui, w, h, mouse):
         host, menu = self.menu.host, self.menu
         info = host.menu_info()
         wide = w >= 880
         x = 72.0 if wide else 28.0
-        item_w = min(430.0, w - 2 * x)
-        top = 64.0
-        # wordmark
-        logo_mark(ui, x, top, 46.0)
-        ui.text("OSM 3D", x + 62, top - 2, T.TITLE_FONT, T.TEXT, weight="bold")
-        ui.text("City explorer", x + 64, top + 36, T.T_BODY, T.TEXT_3, weight="medium")
+        item_w = min(400.0, w - 2 * x)
+        top = 60.0
+
+        # Wordmark
+        logo_mark(ui, x, top, 52.0)
+        ui.text("OSM 3D", x + 68, top + 1, T.T_DISPLAY - 2, T.TEXT_PRIMARY, weight="bold")
+        sub_w = ui.text("City explorer", x + 69, top + 34, T.T_BODY, T.TEXT_TERTIARY, weight="medium")
         if menu.title is False:
-            chip(ui, x + 64 + ui.text_w("City explorer", T.T_BODY, weight="medium") + 12, top + 36,
-                 "PAUSED", T.WARN, T.T_CAPTION, h=20, pad=8)
+            chip(ui, x + 69 + sub_w + 10, top + 33, "Paused", T.WARN_AMBER, T.T_CAPTION_2, h=20, pad=9)
 
         items = self._items()
-        avail = h - 70 - (top + 120) - 20
-        item_h = max(40.0, min(56.0, avail / len(items) - 6))
-        gap = 6.0
-        y0 = top + 120
+        pad = 6.0
+        y0 = top + 96
+        avail = h - 110 - y0 - 2 * pad
+        item_h = max(42.0, min(56.0, avail / len(items)))
+        e = ease_out_expo(menu.t / 0.34)
+        gx = x - (1.0 - e) * 28.0
+        gh = len(items) * item_h + 2 * pad
+        glass(ui, gx, y0, item_w, gh, T.R_4 + 2, "menu")
+
         for i, (ident, label, desc, icon, enabled, note) in enumerate(items):
-            e = ease_out((menu.t - i * 0.045) / 0.32)
-            ix = x - (1.0 - e) * 34.0
-            r = (ix, y0 + i * (item_h + gap), item_w, item_h)
-            self.hits.add(r, "item", i) if enabled else None
-            hov = ui.anim(("main", i), float(inside(r, *mouse) and enabled), 18.0)
-            sel = self.focus == i
-            self._draw_item(ui, r, label, desc, icon, enabled, note, sel, hov, e)
-        # footer
-        ui.text(f"v{getattr(host, 'version', '1.0.0')}", x, h - 98, T.T_SMALL, T.TEXT_4, weight="medium")
+            r = (gx + pad, y0 + pad + i * item_h, item_w - 2 * pad, item_h)
+            if enabled:
+                self.hits.add(r, "item", i)
+            hov = spring(ui, ("main", i), float(inside(r, *mouse) and enabled), T.SPRING_GENTLE)
+            self._draw_item(ui, r, ident, label, desc, icon, enabled, note, self.focus == i, hov)
+            if i < len(items) - 1 and not (self.focus in (i, i + 1)):
+                separator(ui, r[0] + 56, r[1] + r[3] - 0.5, r[2] - 56 - 14)
+
+        ui.text(f"Version {getattr(host, 'version', '1.0.0')}", x + 4, y0 + gh + 16, T.T_CAPTION_2,
+                T.TEXT_QUATERNARY, weight="medium")
         if wide:
             self._draw_session(ui, w, h, info)
 
-    def _draw_item(self, ui, r, label, desc, icon, enabled, note, sel, hov, e):
+    def _draw_item(self, ui, r, ident, label, desc, icon, enabled, note, sel, hov):
         x, y, w, h = r
         if sel and enabled:
-            ui.box(x, y, w, h, T.R_CARD, ((T.ACCENT[0], T.ACCENT[1], T.ACCENT[2], 0.30),
-                                         (T.ACCENT[0], T.ACCENT[1], T.ACCENT[2], 0.08)),
-                   alpha(T.SIGNAL, 0.55), bw=1.0)
-            ui.box(x, y + 8, 3.5, h - 16, 1.75, T.SIGNAL)
+            ui.box(x, y + 1, w, h - 2, 14, T.GROUP_SELECTED)
         elif hov > 0.01:
-            ui.box(x, y, w, h, T.R_CARD, ((1, 1, 1, 0.06 * hov), (1, 1, 1, 0.025 * hov)))
-        col = T.TEXT if enabled else T.TEXT_4
-        isz = 24
-        ix = x + 18 + isz / 2
-        tile = h - 16
-        ui.box(x + 12, y + 8, tile, tile, 9, (1, 1, 1, 0.07 if enabled else 0.03))
-        icons.draw(ui, icon, x + 12 + tile / 2, y + h / 2, isz, T.SIGNAL if (sel and enabled) else col, 1.7)
-        tx = x + 12 + tile + 14
-        big = h >= 50
-        ui.text(label, tx, y + (9 if big else 5), T.T_LABEL + (2 if big else 0), col, weight="semibold")
+            ui.box(x, y + 1, w, h - 2, 14, (1.0, 1.0, 1.0, 0.07 * hov))
+        col = T.TEXT_PRIMARY if enabled else T.TEXT_QUATERNARY
+        tile = 32.0
+        icon_tile(ui, x + 8, y + (h - tile) / 2, tile, icon, self.TILES.get(ident, T.TILE_GRAY), enabled)
+        tx = x + 56
         sub = note if note else desc
-        if big:
-            ui.text(ui.fit(sub, T.T_SMALL, w - (tx - x) - 12), tx, y + h - 22, T.T_SMALL,
-                    T.WARN if (note and not enabled) else T.TEXT_3, weight="medium")
+        if h >= 52:
+            ui.text(label, tx, y + 8, T.T_SUBHEAD, col, weight="semibold")
+            ui.text(ui.fit(sub, T.T_CAPTION_2, w - 56 - 34), tx, y + h - 22, T.T_CAPTION_2,
+                    T.WARN_AMBER if (note and not enabled) else T.TEXT_TERTIARY, weight="regular")
+        else:
+            ui.text_c(label, tx, y + h / 2, T.T_SUBHEAD, col, weight="semibold")
+        if ident not in ("resume", "quit") and enabled:
+            icons.draw(ui, "chevron_r", x + w - 18, y + h / 2, 15, T.TEXT_TERTIARY, 1.8)
 
     def _draw_session(self, ui, w, h, info):
-        pw = 292.0
-        x, y = w - 72 - pw, 64.0
-        rows = [("Location", info.get("location") or "–", "pin"),
-                ("Local time", info.get("time") or "–", "clock"),
-                ("Weather", info.get("weather") or "–", "cloud"),
-                ("Mode", info.get("mode") or "–", "route")]
+        pw = 300.0
+        x, y = w - 72 - pw, 60.0
+        rows = [("Location", info.get("location") or "–", "pin", T.TILE_RED),
+                ("Local time", info.get("time") or "–", "clock", T.TILE_ORANGE),
+                ("Weather", info.get("weather") or "–", "cloud", T.TILE_TEAL),
+                ("Mode", info.get("mode") or "–", "route", T.TILE_GREEN)]
         if info.get("vehicle"):
-            rows.append(("Vehicle", info["vehicle"], "car"))
-        ph = 58 + len(rows) * 44
-        ui.container(x, y, pw, ph, "panel", r=T.R_PANEL)
-        heading(ui, "Current session", x + 20, y + 18)
+            rows.append(("Vehicle", info["vehicle"], "car", T.TILE_BLUE))
+
+        rh = 50
+        ph = 70 + len(rows) * rh + 8
+        glass(ui, x, y, pw, ph, T.R_4 + 2, "hud")
+        ui.text("Current session", x + 20, y + 18, T.T_TITLE_1, T.TEXT_PRIMARY, weight="bold")
         if info.get("coords"):
-            ui.text(info["coords"], x + pw - 20, y + 18, T.T_CAPTION, T.TEXT_4, anchor="right", weight="medium")
-        for i, (k, v, ic) in enumerate(rows):
-            ry = y + 48 + i * 44
+            ui.text(info["coords"], x + 20, y + 40, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="medium")
+
+        for i, (k, v, ic, tile) in enumerate(rows):
+            ry = y + 70 + i * rh
             if i:
-                ui.divider(x + 20, ry - 3, pw - 40)
-            icons.draw(ui, ic, x + 30, ry + 19, 18, T.TEXT_3, 1.5)
-            ui.text(k, x + 50, ry + 4, T.T_CAPTION, T.TEXT_3, weight="medium")
-            ui.text(ui.fit(v, T.T_BASE, pw - 70), x + 50, ry + 19, T.T_BASE, T.TEXT, weight="semibold")
+                separator(ui, x + 20, ry - 0.5, pw - 40)
+            icon_tile(ui, x + 20, ry + (rh - 30) / 2, 30, ic, tile)
+            ui.text(k, x + 62, ry + 7, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="medium")
+            ui.text(ui.fit(v, T.T_BODY, pw - 82), x + 62, ry + 24, T.T_BODY, T.TEXT_PRIMARY, weight="semibold")
 
     # --------------------------------------------------------------- input
     def prompts(self):
@@ -511,13 +540,14 @@ class TravelPage(Page):
         self.cols = 2
 
     def _grid(self, w, h):
-        fx, fy, fw, fh = frame_rect(w, h, 920, 640)
+        need = 96 + math.ceil(len(CITIES) / 2) * 74 + 10 + 42 + 30
+        fx, fy, fw, fh = frame_rect(w, h, 920, need)
         fy += self.menu.oy()
-        cols = 2 if fw < 760 else 2
-        pad = 28
+        cols = 2
+        pad = 32
         cw = (fw - 2 * pad - 14) / cols
-        ch = 62
-        top = fy + 100
+        ch = 64
+        top = fy + 96
         rects = []
         for i in range(len(CITIES)):
             c, r = i % cols, i // cols
@@ -527,36 +557,33 @@ class TravelPage(Page):
     def draw(self, ui, w, h, mouse):
         (fx, fy, fw, fh), rects, cols, bottom = self._grid(w, h)
         self.cols = cols
-        ui.container(fx, fy, fw, fh, "popup", r=T.R_PANEL + 2)
-        panel_header(ui, fx + 28, fy + 26, fw - 100, "Travel", "Jump to a city, or pick any place on the world map",
-                     icon="globe")
-        cr = close_button(ui, fx + fw - 28 - 32, fy + 26, mouse)
+
+        sheet(ui, fx, fy, fw, fh)
+        panel_header(ui, fx + 32, fy + 28, fw - 100, "Travel", "Jump to a city, or pick any place on the world map")
+        cr = close_button(ui, fx + fw - 32 - 32, fy + 30, mouse)
         self.hits.add(cr, "close")
-        ui.divider(fx + 28, fy + 88, fw - 56)
+
         for i, (name, lat, lon) in enumerate(CITIES):
             r = rects[i]
             sel = self.focus == i
-            hov = ui.anim(("trv", i), float(inside(r, *mouse)), 18.0)
+            hov = spring(ui, ("trv", i), float(inside(r, *mouse)), T.SPRING_GENTLE)
             self.hits.add(r, "city", i)
-            ui.box(*r, T.R_CARD, T.CARD_FILL_FOCUS if sel else T.CARD_FILL,
-                   alpha(T.SIGNAL, 0.7) if sel else mix(T.BORDER_SOFT, T.BORDER_PANEL, hov))
-            if sel:
-                brackets(ui, r[0], r[1], r[2], r[3], 9, T.SIGNAL, 1.5, inset=-3)
-            icons.draw(ui, "pin", r[0] + 30, r[1] + r[3] / 2, 22, T.SIGNAL if sel else T.TEXT_2, 1.6)
-            ui.text(name, r[0] + 56, r[1] + 11, T.T_LABEL, T.TEXT, weight="semibold")
+            card(ui, *r, selected=sel, hovered=hov > 0.01, enabled=True)
+            icon_tile(ui, r[0] + 14, r[1] + (r[3] - 38) / 2, 38, "pin", T.TILE_GREEN)
+            ui.text(name, r[0] + 64, r[1] + 13, T.T_SUBHEAD, T.TEXT_PRIMARY, weight="semibold")
             ui.text(f"{abs(lat):.2f}°{'N' if lat >= 0 else 'S'}  {abs(lon):.2f}°{'E' if lon >= 0 else 'W'}",
-                    r[0] + 56, r[1] + 33, T.T_SMALL, T.TEXT_3, weight="medium")
+                    r[0] + 64, r[1] + 35, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="regular")
             if i < 10:
                 keycaps(ui, r[0] + r[2] - 14 - 21, r[1] + (r[3] - 21) / 2, str((i + 1) % 10), 11)
-        by = bottom + 8
-        bw = 190
-        b1 = (fx + 28, by, bw, 40)
-        b2 = (fx + 28 + bw + 12, by, bw + 20, 40)
+
+        by = bottom + 10
+        b1 = (fx + 32, by, 190, 42)
+        b2 = (fx + 32 + 190 + 12, by, 210, 42)
         self.hits.add(b1, "map")
         self.hits.add(b2, "search")
-        button(ui, b1, "Open world map", mouse, key="trv_map", kind="accent", icon="globe",
+        button(ui, b1, "Open world map", mouse, key="trv_map", kind="primary", icon="globe",
                focus=self.focus == len(CITIES))
-        button(ui, b2, "Search for a place", mouse, key="trv_search", icon="pin",
+        button(ui, b2, "Search for a place", mouse, key="trv_search", kind="secondary", icon="pin",
                focus=self.focus == len(CITIES) + 1)
 
     def prompts(self):

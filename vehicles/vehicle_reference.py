@@ -11,7 +11,7 @@ import numpy as np
 from .vehicle_models import (
     _Mesh, SEDAN, TAXI, PICKUP, VAN, COMPACT, BUS, TRUCK, X1, ONE, GLASS, TYRE, RIM, TRIM, PLATE,
     P_PAINT, P_GLASS, P_TYRE, P_HEAD, P_TAIL, P_CHROME, P_TRIM,
-    P_PLATE, P_FIXED, P_MATTE, P_LED, P_PIANO, P_SUNROOF, P_HEAD_LED,
+    P_PLATE, P_FIXED, P_METAL, P_MATTE, P_LED, P_PIANO, P_SUNROOF, P_HEAD_LED,
     REAR_SPIN, FRONT_SPIN, FRONT_STEER, P_LEFT, P_RIGHT,
 )
 from .vehicle_coachwork import _unique, _emit_grid, _const_hint, PIANO, MATTE, SLAT, CHROME, LAMP, LENS, SUNG
@@ -77,8 +77,8 @@ DIMENSIONS = {X1: X1_SPEC, SEDAN: CAMRY, TAXI: CAMRY, PICKUP: F150, VAN: EXPRESS
 # box truck use warm sealed beams; the other reference models use cool LED lenses.
 LAMP_ANCHORS = {
     X1: ((1.894, .666, .772), (-2.000, .629, .960), True),
-    SEDAN: ((2.346, .669, .873), (-2.360, .679, .986), True),
-    TAXI: ((2.346, .669, .873), (-2.360, .679, .986), True),
+    SEDAN: ((2.07332, .69396, .69905), (-2.20336, .65113, .88099), True),
+    TAXI: ((2.07332, .69396, .69905), (-2.20336, .65113, .88099), True),
     PICKUP: ((2.847, .831, 1.046), (-2.824, .890, 1.043), True),
     VAN: ((2.715, .768, 1.091), (-2.664, .837, 1.780), False),
     COMPACT: ((1.80462, .61448, .82012), (-2.04324, .50523, .90945), True),
@@ -157,9 +157,9 @@ def _wheels(C, style):
                 m.disc((ax, yo - s * .038, wr), rr * .76, (0, s, 0), (.28, .29, .30), P_FIXED, n)
                 caliper = len(m.V)
                 m.box(ax + rr * .53, yo - s * .030, wr + .018, .055, .030, .105, SLAT, P_FIXED)
-            _annulus(m, ax, yo, wr, rr * .93, rr * 1.036, s, RIM, P_CHROME, n)
+            _annulus(m, ax, yo, wr, rr * .93, rr * 1.036, s, RIM, P_METAL, n)
             if style == 'steel':
-                m.disc((ax, yo + s * .001, wr), rr * .94, (0, s, 0), RIM, P_CHROME, n)
+                m.disc((ax, yo + s * .001, wr), rr * .94, (0, s, 0), RIM, P_METAL, n)
                 for k in range(8):
                     t = 2 * np.pi * k / 8
                     m.disc((ax + rr * .69 * np.sin(t), yo + s * .003, wr + rr * .69 * np.cos(t)),
@@ -173,8 +173,8 @@ def _wheels(C, style):
                         pts = [(.21 * rr, t - .18), (.96 * rr, tip - .055),
                                (.96 * rr, tip + .055), (.21 * rr, t + .18)]
                         m.quad(*[(ax + r * np.sin(q), yo + s * .005, wr + r * np.cos(q)) for r, q in pts],
-                               RIM, P_CHROME, hint=(0, s, 0))
-            m.disc((ax, yo + s * .009, wr), rr * .245, (0, s, 0), RIM, P_CHROME, 16 if not C.lod else 8)
+                               RIM, P_METAL, hint=(0, s, 0))
+            m.disc((ax, yo + s * .009, wr), rr * .245, (0, s, 0), RIM, P_METAL, 16 if not C.lod else 8)
             if not C.lod:
                 lugs = 5 if style in ('sedan', 'prius') else 6 if style == 'truck' else 8
                 for k in range(lugs):
@@ -597,7 +597,9 @@ def build_reference(m, kind, lod=0):
         raise ValueError('Reference vehicle LOD must be 0, 1 or 2')
     start = len(m.I)
     if kind in (SEDAN, TAXI):
-        _camry(m, lod, taxi=kind == TAXI)
+        from .vehicle_camry import _camry as baked_camry
+        baked_camry(m, lod, taxi=kind == TAXI)
+        return CAMRY.length
     elif kind == PICKUP:
         _f150(m, lod)
     elif kind == VAN:
@@ -628,4 +630,5 @@ def build_reference_lod(kind, level):
         raise ValueError('Reference distance LOD must be 1 or 2')
     m = _Mesh()
     build_reference(m, kind, level)
-    return m.template(compact=True)
+    glass = getattr(m, 'glass_indices', 0)
+    return m.template(len(m.I) - glass, compact=True, glass=glass)

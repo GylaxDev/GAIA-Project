@@ -260,8 +260,8 @@ class MinimapPanel:
         self._rect = rect
         x, y, cw, ch = rect
         hover = ui.anim(("minimap", "hover"), float(_in(rect, *mouse)), 16.0)
-        ui.container(x, y, cw, ch, "panel", r=14)
-        ui.box(x + 1, y + 1, cw - 2, ch - 2, 13, fill=(BG_TOP, BG_BOTTOM))
+        ui.box(x, y, cw, ch, 20, None, None, shadow=18.0, shadow_dy=4.0, shadow_alpha=0.30)
+        ui.box(x, y, cw, ch, 20, fill=(BG_TOP, BG_BOTTOM))
 
         cam = self._camera(focus, heading, rect)
         self._cam = cam
@@ -271,12 +271,12 @@ class MinimapPanel:
 
         verts, colors = self._batch(scene, focus, heading, rect, cam)
         if len(verts):
-            ui.triangles(verts, colors, clip=rect, clip_radius=13)
+            ui.triangles(verts, colors, clip=rect, clip_radius=19)
 
         if navigation is not None and navigation.route is not None:
             points = navigation.route.tail(navigation.progress)
             projected, depth = self._project_flat(points[:, :2].astype(np.float32), cam)
-            route_stroke(ui, projected, rect, (depth[:-1] > 1.) & (depth[1:] > 1.), radius=13.)
+            route_stroke(ui, projected, rect, (depth[:-1] > 1.) & (depth[1:] > 1.), radius=19.)
 
         self._places(ui, scene, focus, rect, cam, mouse, navigation)
         if navigation is not None and navigation.destination is not None:
@@ -284,8 +284,8 @@ class MinimapPanel:
 
         self._puck(ui, self._focus_px[0], self._focus_px[1])
         self._chrome(ui, rect, heading, hover)
-        border = T.BORDER_FOCUS if hover > 0.5 else T.BORDER_PANEL
-        ui.box(x, y, cw, ch, 14, fill=None, border=border, bw=1.0)
+        border = T.BORDER_EMPHASIZED if hover > 0.5 else T.BORDER_DEFAULT
+        ui.box(x, y, cw, ch, 20, fill=None, border=border, bw=1.0)
 
     def _places(self, ui, scene, focus, rect, cam, mouse, navigation):
         places = scene_places(scene)
@@ -471,12 +471,12 @@ class MinimapPanel:
     def _chrome(self, ui, rect, heading, hover):
         x, y, w, h = rect
         # 2D badge: flat ground plane, only the camera is perspective.
-        ui.container(x + 10, y + 10, 30, 18, "inset", r=5, shadow=False)
-        ui.text_c("2D", x + 25, y + 19, T.T_CAPTION, T.TEXT_2,
+        ui.box(x + 12, y + 12, 32, 20, 10, (0.0, 0.0, 0.0, 0.40))
+        ui.text_c("2D", x + 28, y + 22, T.T_CAPTION, T.TEXT_SECONDARY,
                   anchor="center", weight="semibold")
         # compass
-        cx, cy = x + w - 22, y + 21
-        ui.circle(cx, cy, 12.5, (0.02, 0.03, 0.05, 0.52))
+        cx, cy = x + w - 26, y + 24
+        ui.circle(cx, cy, 12.5, (0.0, 0.0, 0.0, 0.40))
         ui.ring(cx, cy, 12.5, 1.0, (1.0, 1.0, 1.0, 0.18), seg=20)
         vx, vy = -math.cos(heading), -math.sin(heading)
         ui.line(cx, cy, cx + vx * 8.5, cy + vy * 8.5, 2.0, (1.0, 1.0, 1.0, 0.92))
@@ -488,7 +488,7 @@ class MinimapPanel:
         px_per_m = self._cam["focal"] / DISTANCE if self._cam else 1.0
         metres = next((m for m in (100.0, 50.0, 25.0, 10.0) if m * px_per_m <= 62.0), 10.0)
         length = metres * px_per_m
-        bx, by = x + w - 12, y + h - 15
+        bx, by = x + w - 18, y + h - 17
         ui.line(bx - length, by, bx, by, 1.5, (1.0, 1.0, 1.0, 0.72))
         for tx in (bx - length, bx):
             ui.line(tx, by - 3, tx, by + 2, 1.5, (1.0, 1.0, 1.0, 0.72))
@@ -497,9 +497,9 @@ class MinimapPanel:
                 weight="medium")
 
         if hover > 0.5:
-            ui.box(x + 8, y + h - 26, 74, 18, 6, fill=(0.015, 0.022, 0.034, 0.78))
-            ui.text_c("Open map", x + 16, y + h - 17, T.T_CAPTION,
-                      T.TEXT_2, weight="medium")
+            ui.box(x + 12, y + h - 32, 84, 22, 11, fill=(0.0, 0.0, 0.0, 0.55))
+            ui.text_c("Open map", x + 54, y + h - 21, T.T_CAPTION,
+                      T.TEXT_PRIMARY, anchor="center", weight="medium")
 
 
 def _road_geometry(placed, origin, scale):

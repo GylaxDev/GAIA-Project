@@ -6,7 +6,8 @@ import time
 
 from . import theme as T
 from .map_draw import RED, maneuver_symbol, place_symbol
-from .maps_ui import MapsChrome, _in
+from .maps_ui import MapsChrome
+from .ui_kit import _in, activity, glass, mix, spring
 from .minimap import MinimapPanel
 from ..world.places import CATEGORY_LABELS, scene_places
 
@@ -88,11 +89,14 @@ class NavigationPanel:
             return
         rect = (T.MARGIN, T.MARGIN + 72, 140., 32.)
         self._rects["open"] = rect
-        hover = float(_in(rect, *mouse))
-        ui.container(*rect, "button", r=9, hover=hover)
-        MapsChrome.icon_directions(ui, rect[0] + 17, rect[1] + 16, 16, T.ACCENT)
-        ui.text_c("Directions", rect[0] + 34, rect[1] + 16, T.T_BODY, T.TEXT, weight="medium")
-        ui.text_c("F6", rect[0] + 126, rect[1] + 16, T.T_CAPTION, T.TEXT_3, anchor="right")
+        hover = spring(ui, ("nav_open",), float(_in(rect, *mouse)), T.SPRING_GENTLE)
+        glass(ui, rect[0], rect[1], rect[2], rect[3], rect[3] / 2, "hud")
+        if hover > 0.01:
+            ui.box(rect[0] + 2, rect[1] + 2, rect[2] - 4, rect[3] - 4, (rect[3] - 4) / 2, (1.0, 1.0, 1.0, 0.09 * hover))
+        MapsChrome.icon_directions(ui, rect[0] + 19, rect[1] + 16, 16, T.ACCENT_BLUE)
+        ui.text_c("Directions", rect[0] + 38, rect[1] + 16, T.T_BODY, T.TEXT_PRIMARY, weight="semibold")
+        ui.text_c("F6", rect[0] + rect[2] - 14, rect[1] + 16, T.T_CAPTION_2, T.TEXT_TERTIARY, anchor="right",
+                  weight="medium")
         inset = MinimapPanel().layout(w, h, status_h)
         if navigation.destination is not None and inset is not None:
             guide = (inset[0], inset[1] - 112., inset[2], 104.)
@@ -103,26 +107,25 @@ class NavigationPanel:
 
     def _guidance(self, ui, rect, mouse, nav):
         x, y, w, h = rect
-        ui.container(*rect, "panel", r=14)
-        ui.box(x + 1, y + 1, w - 2, 54, 13,
-               fill=((0.055, .29, .21, 1.), (.035, .20, .16, 1.)))
+        glass(ui, x, y, w, h, 20, "raised")
+
         maneuver = nav.next_maneuver
         kind = "arrive" if nav.status == "arrived" else maneuver.kind if maneuver else 0
         if nav.status in ("routing", "rerouting"):
-            ui.spinner(x + 27, y + 28, 8., getattr(ui, "now", 0.))
+            activity(ui, x + 27, y + 28, 9., getattr(ui, "now", 0.))
         else:
             maneuver_symbol(ui, x + 27, y + 28, kind, 14.)
         ui.text(ui.fit(nav.instruction, T.T_BODY, w - 62, weight="semibold"),
-                x + 50, y + 11, T.T_BODY, T.TEXT, weight="semibold")
+                x + 50, y + 11, T.T_BODY, T.TEXT_PRIMARY, weight="semibold")
         if nav.status == "navigating":
             sub = ("Now" if nav.turn_distance < 10. else f"In {distance_text(nav.turn_distance)}")
             if maneuver.road: sub += " · " + maneuver.road
         elif nav.status == "arrived": sub = "Park when it is safe"
         else: sub = "Loaded-road navigation"
-        ui.text(ui.fit(sub, T.T_SMALL, w - 62), x + 50, y + 33, T.T_SMALL, T.TEXT_2, weight="medium")
-        ui.circle(x + 13, y + 68, 3., RED)
+        ui.text(ui.fit(sub, T.T_CAPTION_2, w - 62), x + 50, y + 33, T.T_CAPTION_2, T.TEXT_SECONDARY, weight="medium")
+        ui.circle(x + 16, y + 68, 3.5, RED)
         ui.text_c(ui.fit(nav.destination.name, T.T_BODY, w - 60, weight="semibold"),
-                  x + 23, y + 68, T.T_BODY, T.TEXT, weight="semibold")
+                  x + 26, y + 68, T.T_BODY, T.TEXT_PRIMARY, weight="semibold")
         if nav.status == "arrived":
             trip = "Route complete"
         elif nav.route is not None:
@@ -135,18 +138,19 @@ class NavigationPanel:
                     "offroad": "Move closer to a loaded street",
                     "no_route": "Try another reachable place",
                     "error": "Try choosing the destination again"}.get(nav.status, "Finding a connected route")
-        ui.text_c(trip, x + 12, y + 88, T.T_SMALL, T.TEXT_3, weight="medium")
+        ui.text_c(trip, x + 16, y + 88, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="medium")
         cancel = (x + w - 32, y + 59, 24., 24.)
         self._rects["cancel"] = cancel
-        ui.circle(cancel[0] + 12, cancel[1] + 12, 11., (1., 1., 1., .13 if _in(cancel, *mouse) else .06))
+        hover = float(_in(cancel, *mouse))
+        ui.circle(cancel[0] + 12, cancel[1] + 12, 12., (1., 1., 1., .18 if hover else .09))
         self._close_icon(ui, cancel)
         self._rects["guidance_bg"] = rect
 
     @staticmethod
     def _close_icon(ui, rect):
         cx, cy = rect[0] + rect[2] * .5, rect[1] + rect[3] * .5
-        ui.line(cx - 3, cy - 3, cx + 3, cy + 3, 1.6, T.TEXT_2)
-        ui.line(cx - 3, cy + 3, cx + 3, cy - 3, 1.6, T.TEXT_2)
+        ui.line(cx - 3, cy - 3, cx + 3, cy + 3, 1.6, T.TEXT_TERTIARY)
+        ui.line(cx - 3, cy + 3, cx + 3, cy - 3, 1.6, T.TEXT_TERTIARY)
 
     def _picker(self, ui, w, h, mouse):
         x, y = T.MARGIN, T.MARGIN + (72 if h >= 380 else 0)
@@ -158,32 +162,34 @@ class NavigationPanel:
         self._rects = {}
         close = (x + cw - 38, y + 10, 26., 26.)
         self._rects["close"] = close
-        ui.container(x, y, cw, ch, "popup", r=14)
-        ui.text("Where to?", x + 16, y + 13, T.T_LABEL, T.TEXT, weight="semibold")
+        glass(ui, x, y, cw, ch, 24, "raised")
+        ui.text("Where to?", x + 16, y + 13, T.T_SUBHEAD + 1, T.TEXT_PRIMARY, weight="semibold")
         self._close_icon(ui, close)
-        ui.text("Nearby places · Enter to navigate", x + 16, y + 38, T.T_SMALL, T.TEXT_3)
-        field = (x + 12, y + 60, cw - 24, 34.)
+        ui.text("Nearby places · Enter to navigate", x + 16, y + 38, T.T_CAPTION_2, T.TEXT_TERTIARY)
+        field = (x + 12, y + 60, cw - 24, 36.)
         MapsChrome()._field(ui, *field, self.query, "Search nearby places")
         self._rects["field"] = field
         if not self.items:
-            ui.text("No matching places loaded", x + 16, y + 112, T.T_BODY, T.TEXT_2)
-            ui.text("Right-click the minimap to drop a pin", x + 16, y + 134, T.T_SMALL, T.TEXT_3)
+            ui.text("No matching places loaded", x + 16, y + 112, T.T_BODY, T.TEXT_SECONDARY)
+            ui.text("Right-click the minimap to drop a pin", x + 16, y + 134, T.T_CAPTION_2, T.TEXT_TERTIARY)
         for row, index in enumerate(range(start, start + count)):
             place = self.items[index]
             rect = (x + 10, y + 102 + row * 46, cw - 20, 44.)
             self._rects[f"place:{index}"] = rect
-            if index == self.selection or _in(rect, *mouse):
-                ui.box(*rect, 8, fill=(.08, .45, .90, .18))
+            sel = index == self.selection or _in(rect, *mouse)
+            if sel:
+                ui.box(*rect, 12., T.GROUP_SELECTED if index == self.selection else T.GROUP_HOVER)
             place_symbol(ui, rect[0] + 20, rect[1] + 22, place.category, 12.)
             ui.text(ui.fit(place.name, T.T_BODY, rect[2] - 56, weight="semibold"),
-                    rect[0] + 42, rect[1] + 6, T.T_BODY, T.TEXT, weight="semibold")
+                    rect[0] + 42, rect[1] + 6, T.T_BODY, T.TEXT_PRIMARY, weight="semibold")
             distance = math.hypot(place.x - self._origin[0], place.y - self._origin[1])
             sub = f"{CATEGORY_LABELS.get(place.category, 'Place')} · {distance_text(distance)}"
-            ui.text(ui.fit(sub, T.T_SMALL, rect[2] - 56), rect[0] + 42, rect[1] + 25, T.T_SMALL, T.TEXT_3)
-        button = (x + 12, y + ch - 38, cw - 24, 28.)
+            ui.text(ui.fit(sub, T.T_CAPTION_2, rect[2] - 56), rect[0] + 42, rect[1] + 25, T.T_CAPTION_2, T.TEXT_TERTIARY)
+        button = (x + 12, y + ch - 42, cw - 24, 30.)
         self._rects["choose_map"] = button
-        ui.container(*button, "button", r=8, shadow=False, hover=float(_in(button, *mouse)))
-        MapsChrome.icon_map(ui, button[0] + 17, button[1] + 14, 15, T.TEXT_2)
-        ui.text_c("Choose on map / drop a minimap pin", button[0] + 33, button[1] + 14,
-                  T.T_SMALL, T.TEXT_2, weight="medium")
+        hover = spring(ui, ("nav_choose",), float(_in(button, *mouse)), T.SPRING_GENTLE)
+        ui.box(*button, button[3] / 2, mix(T.FILL_3, T.FILL_1, hover))
+        MapsChrome.icon_map(ui, button[0] + 19, button[1] + 14, 15, T.TEXT_SECONDARY)
+        ui.text_c("Choose on map / drop a minimap pin", button[0] + 35, button[1] + 14,
+                  T.T_CAPTION_2, T.TEXT_SECONDARY, weight="medium")
         self._rects["picker_bg"] = (x, y, cw, ch)

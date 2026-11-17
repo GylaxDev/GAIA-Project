@@ -60,11 +60,14 @@ def supports_ssbo(gl):
 class LightField:
     """Holds the candidate lights and draws the surviving ones in one batch."""
 
-    def __init__(self, gl, capacity=24000, far_clip=2200.0, fade_ratio=0.78):
+    def __init__(self, gl, capacity=24000, far_clip=2200.0, fade_ratio=0.78, emissive_ratio=0.6):
         self.gl = gl
         self.capacity = int(capacity)
         self.far_clip = float(far_clip)
         self.fade_start = float(far_clip) * float(fade_ratio)
+        # Facade emissive strips are sub-pixel long before a lamp row is: keeping them
+        # to a shorter range drops thousands of far sprites from the night pass.
+        self.emissive_far = float(far_clip) * float(emissive_ratio)
         self.using_ssbo = supports_ssbo(gl)
 
         vs, fs = lightfield_shaders(self.using_ssbo)
@@ -163,7 +166,9 @@ class LightField:
         jitter = np.abs(np.sin(e[:, 0] * 3.1 + e[:, 1] * 1.7)) if len(e) else 0.0
         em[:, 3] = 0.15 + 0.10 * jitter   # emitting strip width, not a multi-metre glowing facade
         em[:, 4:7] = e[:, 3:6]
-        em[:, 7] = _EMISSIVE_INTENSITY
+        # Facade emissive strips fade out by 50% of the city-range so far-
+        # placed signs do not contribute beyond ~1 km.
+        em[:, 7] = _EMISSIVE_INTENSITY * 0.5
         self._emissive = em
 
     def set_vehicle_templates(self, templates):
@@ -220,11 +225,14 @@ class LightField:
         r = np.concatenate([normalize_instances(t) for _, t in rows])
         kinds = np.concatenate([np.full(len(t), kind, np.int32) for kind, t in rows])
         x, y, z = r[:, 12], r[:, 13], r[:, 14]
-        m = ((x - eye[0]) ** 2 + (y - eye[1]) ** 2 < _VEHICLE_FAR ** 2) & (r[:, 23] > 0.)
-        if not m.any():
+        # Only process vehicles within a close range; distant head/tail lamps
+        # cost far more CPU than they contribute visually at night.
+        d2 = (x - eye[0]) ** 2 + (y - eye[1]) ** 2
+        near = d2 < (_VEHICLE_FAR * 0.3) ** 2
+        if not near.any():
             return None
-        r = r[m]
-        kinds = kinds[m]
+        r = r[near]
+        kinds = kinds[near]
         x, y, z = r[:, 12], r[:, 13], r[:, 14]
         fx, fy = r[:, 0], r[:, 1]
         n = np.hypot(fx, fy)
@@ -330,7 +338,10 @@ class LightField:
         nrm = np.asarray(planes, np.float32)[:, :3]
         off = np.asarray(planes, np.float32)[:, 3]
 
-        parts = [self._lamps, self._emissive]
+        # Reduced view range for emissive strips: same factor used in sync_chunks.
+        emissive_far2 = (self.emissive_far * 0.5) ** 2
+
+        parts = [self._lamps]
         if traffic:
             veh = self._traffic_lights(traffic, eye)
             if veh is not None:
@@ -339,6 +350,11 @@ class LightField:
             if signals is not None:
                 parts.append(signals)
 
+        # Emissive strips use a reduced far range so distant signs drop out.
+        emissive_far2 = self.emissive_far ** 2
+
+        # Include both static lamps and emissive strips; emissive will be culled early.
+        parts = [self._lamps, self._emissive]
         far2 = self.far_clip * self.far_clip
         keep, dists = [], []
         for arr in parts:
@@ -356,8 +372,10 @@ class LightField:
             # nearest surface reaches Z = 0 cannot contribute a pixel
             front = v[:, 2] < -rad
             inside = (p @ nrm.T + off >= -rad[:, None]).all(axis=1)
+            # Emissive strips cull at the reduced range; static lamps use full far_clip.
+            emissive_near = d2 < emissive_far2 if arr is self._emissive else d2 < far2
             near = d2 < far2
-            m = front & inside & near
+            m = front & inside & emissive_near
             self.culled += len(arr) - int(m.sum())
             if m.any():
                 keep.append(arr[m])

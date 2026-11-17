@@ -9,15 +9,17 @@ z = 0 is the road surface.  Part ids (read by shaders/vehicle.py) are the per-ve
      2 tyre                                          skirts, mirror bases, lower valances)
      3 headlight (warm projector, night-emissive) 11 LED signature (cool white; DRL by day,
      4 taillight (red, night-emissive)                night-emissive)
-     5 chrome / alloy rim                         12 piano-black gloss (pillars, grille mesh,
+     5 chrome (legacy wheel parts are alloy)     12 piano-black gloss (pillars, grille mesh,
      6 black trim / rubber                            lamp housings)
      7 licence plate                              13 panoramic roof glass
-      8 fixed-colour paint                         14 cool-white LED head / fog light
+     8 fixed-colour paint                         14 cool-white LED head / fog light
+     9 satin alloy / unplated metal
                                                   15 ground glow quad (translucent, LAST)
-                                                  16/17 left/right indicator lenses
+                                                   16/17 left/right indicator lenses
+                                                   22/23 lamp covers, 24 clear cabin windows
 
-The last 12 indices of every template are the two translucent ground-glow
-quads; the renderer draws everything before them as the opaque pass.
+Near templates end with 12 ground-glow indices. ``glass_count`` indices immediately
+after ``opaque_count`` hold transmissive lamp covers/windows at every LOD.
 """
 import numpy as np
 
@@ -37,12 +39,14 @@ ONE = (1.0, 1.0, 1.0)
 
 # material ids (vertex attribute `aPart`)
 P_PAINT, P_GLASS, P_TYRE, P_HEAD, P_TAIL, P_CHROME, P_TRIM, P_PLATE, P_FIXED = range(9)
+P_METAL = 9                      # satin alloy / bare metal; never a chrome mirror
 P_MATTE, P_LED, P_PIANO, P_SUNROOF = 10, 11, 12, 13
 P_HEAD_LED = 14                  # LED projectors, night-only; distinct from daytime signatures
 LED_COLOR = (0.72, 0.88, 1.00)   # cool-blue LED signature / DRL (uniform uLedColor)
 P_GLOW = 15                      # translucent pass, explicitly tested by material id
 P_LEFT, P_RIGHT = 16, 17
 P_LENS_CLEAR, P_LENS_RED = 22, 23   # translucent lamp lenses (own blended pass; never in the opaque range)
+P_WINDOW = 24                     # real cabin transmission, using the same two-pass glazing draw
 AMBER = (.94, .38, .035)
 # Separate vertex metadata: pivot xyz + animation role. Material ids stay integral.
 STATIC, REAR_SPIN, FRONT_SPIN, FRONT_STEER = range(4)
@@ -54,7 +58,7 @@ class VehicleTemplate(tuple):
         v = np.ascontiguousarray(vertices, np.float32)
         i = np.ascontiguousarray(indices, np.uint32)
         result = super().__new__(cls, (v, i, int(opaque_count)))
-        result.glass_count = int(glass_count)   # translucent-lens indices stored right after the opaque range
+        result.glass_count = int(glass_count)   # translucent lens/window indices after the opaque range
         result.animation = (np.zeros((len(v), 4), np.float32) if animation is None
                             else np.ascontiguousarray(animation, np.float32))
         if result.animation.shape != (len(v), 4):
@@ -243,7 +247,7 @@ def _wheel(m, body, x, z, r, half_w, sign, center_y=None):
              for uu, rr in zip(u, rad)]
     m.loft(np.stack(rings), TYRE, 2, cap_first=False, cap_last=False)
     yo = yc + sign * half_w * 1.0
-    m.disc((x, yo, z), r * 0.66, (0, sign, 0), RIM, 5, 10)
+    m.disc((x, yo, z), r * 0.66, (0, sign, 0), RIM, P_METAL, 10)
     for k in range(5):                                    # dark gaps between spokes
         ak = 2 * np.pi * (k + 0.5) / 5
         m.disc((x + 0.40 * r * np.sin(ak), yo + sign * 0.004, z + 0.40 * r * np.cos(ak)),

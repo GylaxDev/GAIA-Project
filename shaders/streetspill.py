@@ -27,6 +27,11 @@ VERTEX_LAMP_LIMIT = 12        # per-vertex pass keeps only the nearest few lamps
 RAIN_LAMP_LIMIT = 8           # scattering pass: rain only needs the closest lamps
 SPILL_NEAR_START = 200.0      # metres: per-pixel shading starts to replace the vertex sum
 SPILL_NEAR_END = 400.0        # metres: per-pixel shading has fully replaced it
+# Lamp glint gains on cars.  The lobe is normalized like a luminaire seen in a
+# polished surface, so a lamp at 6 m reads as a compact white highlight the way the
+# sun's reflected disc does in daylight, scaled by each material's Fresnel term.
+GLINT_SHARP_GAIN = 6.0
+GLINT_SOFT_GAIN = 1.0
 
 STREET_SPILL = f"""
 #define MAX_CELL_LIGHTS {MAX_CELL_LIGHTS}
@@ -105,6 +110,59 @@ void streetLamps(vec3 P, vec3 N, vec3 V, int limit, out vec3 diffE, out vec3 spe
 
 void streetLights(vec3 P, vec3 N, vec3 V, out vec3 diffE, out vec3 specE) {{
     streetLamps(P, N, V, MAX_CELL_LIGHTS, diffE, specE);
+}}
+
+// Compact luminaire highlights for small glossy objects (cars).  The cell list is
+// nearest-first, so a short cap keeps the lamps that can actually put a highlight on
+// this fragment; the full 48-lamp loop with a pow() chain per lamp is what made the
+// shared STREET_SPECULAR path too costly to enable everywhere.
+#define VEHICLE_GLINT_LAMPS 6
+void streetLampGlints(vec3 P, vec3 N, vec3 V, out vec3 sharp, out vec3 soft) {{
+    sharp = vec3(0.0);
+    soft = vec3(0.0);
+
+    ivec2 grid = textureSize(uLampCell, 0);
+    ivec2 cell = ivec2(floor((P.xy - uLampOrigin) / uLampCellSize));
+    if (cell.x < 0 || cell.y < 0 || cell.x >= grid.x || cell.y >= grid.y) return;
+
+    vec4 head = texelFetch(uLampCell, cell, 0);
+    if (head.y < 0.5 || P.z >= head.z) return;
+    int first = int(head.x + 0.5);
+    int count = min(int(head.y + 0.5), VEHICLE_GLINT_LAMPS);
+    int width = textureSize(uLampRec, 0).x;
+
+    for (int k = 0; k < VEHICLE_GLINT_LAMPS; k++) {{
+        if (k >= count) break;
+        int slot = first + k;
+        int row = slot / width;
+        vec4 rec = texelFetch(uLampRec, ivec2(slot - row * width, row), 0);
+
+        vec3 d = rec.xyz - P;
+        float r2 = dot(d, d);
+        if (r2 > 3600.0 || d.z <= 0.0) continue;    // beyond 60 m a glint is a pixel at most
+        vec3 Ld = d * inversesqrt(max(r2, 0.001));
+        float nl = max(dot(N, Ld), 0.0);
+        if (nl <= 0.0) continue;
+
+        int rgb8 = int(rec.w);
+        vec3 lc = vec3(float(rgb8 >> 16), float((rgb8 >> 8) & 255),
+                       float(rgb8 & 255)) * (1.0 / 255.0);
+        lc /= max(dot(lc, vec3(0.2126, 0.7152, 0.0722)), 1e-5);
+
+        float cosNadir = max(Ld.z, 0.0);
+        float c2 = cosNadir * cosNadir;
+        float I = (0.60 + 0.40 * 4.0 * c2 * (1.0 - c2))
+                * smoothstep(0.05, 0.20, cosNadir);
+        float fade = 1.0 - smoothstep(LAMP_FADE_START, LAMP_REACH, sqrt(max(r2, 0.001)));
+        float inv = 1.0 / max(r2, 0.25);
+        vec3 H = normalize(Ld + V);
+        float h = max(dot(N, H), 0.0);
+
+        // Glossy coat/glass/paint lobe and a broad one for satin trim, rubber and
+        // brushed metal, both in irradiance units like the diffuse sum above.
+        sharp += lc * ({GLINT_SHARP_GAIN:.3f} * pow(h, 1400.0) * I * fade * inv);
+        soft  += lc * ({GLINT_SOFT_GAIN:.3f} * pow(h, 90.0) * I * fade * inv);
+    }}
 }}
 
 // Diffuse-only sum for the vertex stage: the cell list is nearest-first, so a

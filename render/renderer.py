@@ -23,7 +23,8 @@ from .lights import LightField
 from ..peds.pedestrian_renderer import PedestrianRenderer
 from .spill import SpillGrid
 from ..vehicles.vehicle_models import LED_COLOR as _LED_COLOR, animation_metadata
-from ..vehicles.vehicle_instances import VEHICLE_STRIDE, VEHICLE_BYTES, INSTANCE_ATTRIBUTES, normalize_instances
+from ..vehicles.vehicle_instances import (VEHICLE_STRIDE, VEHICLE_BYTES, INSTANCE_ATTRIBUTES, normalize_instances,
+                                          LENGTHS as _CAR_LENGTHS, WIDTHS as _CAR_WIDTHS, WHEELBASES as _CAR_WHEELBASES)
 from ..traffic.traffic_signals import build_signal_template, SIGNAL_CENTER, SIGNAL_RADIUS
 from ..world.weather_system import PrecipitationRenderer, RainOcclusionMap, wind_displacement
 from ..core.astronomy import REFERENCE_DATE, celestial_state, parse_date
@@ -40,7 +41,8 @@ from ..shaders import (
     SHADOW_VS, SHADOW_FS, SHADOW_TREE_VS,
     STREETPOLE_VS, STREETPOLE_FS,
     SKID_VS, SKID_FS,
-    VEHICLE_VS, VEHICLE_FS, VEHICLE_SHADOW_VS, VEHICLE_SHADOW_FS,
+    CONTACT_VS, CONTACT_FS,
+    VEHICLE_VS, VEHICLE_FS, VEHICLE_GLASS_MAT_FS, VEHICLE_SHADOW_VS, VEHICLE_SHADOW_FS,
     NEON_VS, NEON_FS,
     BLOOM_VS, BLOOM_PREFILTER_FS, BLOOM_BLUR_FS, BLOOM_COMPOSITE_FS, STAR_FS, STAR_SRC_FS, STAR_STREAK_FS,
     AE_METER_FS, AE_ADAPT_FS, BLOOM_DOWN_FS,
@@ -435,6 +437,8 @@ class Renderer:
     FOG_SPAN = 0.9
 
     VEHICLE_SHADOW_UNIT = 8
+    CONTACT_FLOATS = 13         # origin3 axisX3 axisY3 (halfLen halfWidth wheelbase visibility)
+    CONTACT_MAX = 1024
     NEAR_SHADOW_UNIT = 9
     GROUND_TEXTURE_UNIT = 10
     WATER_RIPPLE_UNIT = 12
@@ -468,6 +472,7 @@ class Renderer:
         self.prog_shadow_vehicle = self._program(VEHICLE_SHADOW_VS, VEHICLE_SHADOW_FS)
         self.prog_streetpole  = self._program(STREETPOLE_VS, mrt_fs(STREETPOLE_FS, "N * 0.5 + 0.5, 0.0"))
         self.prog_vehicle     = self._program(VEHICLE_VS, mrt_fs(VEHICLE_FS, VEHICLE_MAT))
+        self.prog_vehicle_glass = self._program(VEHICLE_VS, VEHICLE_GLASS_MAT_FS)
         self.last_ped_tris = 0
         try:                       # pedestrians are optional: a shader failure must not stop the city
             self.peds = PedestrianRenderer(self)
@@ -478,6 +483,10 @@ class Renderer:
         self.skid_marks = None        # SkidMarks owned by the app; uploaded lazily
         self._skid_vao = self._skid_vbo = None
         self._skid_generation = -1
+        self.prog_contact     = self._program(CONTACT_VS, CONTACT_FS)
+        self._contact_vao = self._contact_corner_vbo = self._contact_inst_vbo = None
+        self._contact_rows = np.empty((0, self.CONTACT_FLOATS), np.float32)
+        self._contact_count = 0
         self.prog_neon        = self._program(NEON_VS, NEON_FS)
         self.prog_bloom_pre   = self._program(BLOOM_VS, BLOOM_PREFILTER_FS)
         self.prog_bloom_blur  = self._program(BLOOM_VS, BLOOM_BLUR_FS)
@@ -490,9 +499,10 @@ class Renderer:
         self.prog_ae_adapt    = self._program(BLOOM_VS, AE_ADAPT_FS)
         self.prog_ssr         = self._program(BLOOM_VS, SSR_FS)
         self.prog_ao          = self._program(BLOOM_VS, AO_FS)
-        # Light sprites are drawn to 2.2 km, far past the pole/geometry LOD, so the
-        # skyline keeps its lamps when the buildings have faded into fog.
-        self.lights = LightField(gl, far_clip=2200.0)
+        # Light sprites are drawn past the pole/geometry LOD so the skyline keeps
+        # its lamps when the buildings have faded into fog, but the range is kept
+        # inside the fog so the thousands of sprites beyond it are never packed.
+        self.lights = LightField(gl, far_clip=1500.0)
 
         self._uloc = {}
         self._uniform_values = {}
@@ -674,12 +684,12 @@ class Renderer:
         self._neon_col = np.zeros((48, 3), np.float32)
         self._neon_n = 0
         self.bloom_strength = 0.08
-        self.bloom_threshold = 1.0
+        self.bloom_threshold = 3.0  # 20% soft knee starts at 2.4 exposed HDR units
         self._t0 = time.time()
         # GTA-style grade (V toggles).  grade_strength scales the whole look.
         self.grade_enabled = True
         self.day_glow = 0.06         # optical scatter: only a small fraction of highlight energy
-        self.day_threshold = 1.5     # ordinary sunlit materials should not bloom
+        self.day_threshold = 4.0     # onset at 3.2: ordinary sunlit materials stay below bloom
         self.grade_strength = 1.0
         # Film look: 0 neutral, 1 Colorful, 2 Cinematic.  Cycled with V.
         self.look = 2
@@ -746,11 +756,13 @@ class Renderer:
         # Screen space reflections (toggle at runtime with Renderer.ssr_enabled)
         # Detail bounds in metres. Mesh cells and individual instances are culled
         # within large chunks; vehicle LOD additionally follows projected size.
-        # Optimized: reduced distances for better performance at distance
-        self.lod = {"trees": 500.0, "props": 300.0, "vehicles": 800.0,
-                    "edges": 500.0, "neon": 500.0}
-        # Building LOD transition distance (was 220m, now 150m for earlier simplification)
-        self.building_lod_distance = 150.0
+        # Everything past these distances is either fogged out or drawn by the
+        # simplified far meshes, so the cut is not visible from the street.
+        self.lod = {"trees": 320.0, "props": 200.0, "vehicles": 480.0,
+                    "edges": 320.0, "neon": 340.0}
+        # Building LOD transition distance: close cells keep rooftop equipment,
+        # everything further uses the simplified shell drawn for the skyline.
+        self.building_lod_distance = 100.0
         self.last_tree_lod_counts = [0, 0, 0]
         self.last_tree_tris = self.last_tree_shadow_tris = 0
         self.last_tree_shadow_lod_counts = [0, 0, 0]
@@ -772,6 +784,13 @@ class Renderer:
         self.ao_enabled = True
         self.ao_radius = 3.0        # metres: contact under parapets, vehicles and in corners
         self.ao_strength = 1.0      # occludes ambient light only
+        # GTA IV-style dark contact shadow under cars (shaders/contact.py).
+        self.wheel_ao = 1.0         # 0..1 recess occlusion on the brake disc / hub (shaders/vehicle.py)
+        self.contact_shadows = True
+        self.contact_shadow_strength = 0.90   # 0..1, how black it gets under the chassis
+        self.contact_shadow_margin = 0.55      # metres of soft falloff past the body
+        self.contact_shadow_clip = 1.0         # 0 ignore the shadow map .. 1 fully clipped by it
+        self.contact_shadow_distance = 140.0   # metres; fades out over the last 40%
         self._mrt_on = False        # scene FBO (2 colour targets) is bound
         self._mrt_n = 0
         # MSAA samples on the HDR scene target; 0 = off.  Off by default: the
@@ -1290,6 +1309,7 @@ class Renderer:
         arr, kinds = self._vehicle_rows(chunks, traffic)
         alive = arr[:, 23] > 0.
         visible = sphere_mask(arr[:, 12:15], 8., self._eye, self.lod['vehicles'], planes) & alive
+        self._prepare_contact_shadows(arr, kinds, visible)
         casters = np.zeros(len(arr), bool)
         if vehicle_light is not None:
             casters = sphere_mask(arr[:, 12:15], 8., self._eye, math.inf,
@@ -1329,6 +1349,87 @@ class Renderer:
         pose = np.ascontiguousarray(arr[casters, :16]).tobytes()
         motion = np.ascontiguousarray(arr[casters][:, [20, 21, 23]]).tobytes()
         return (vehicle_light.matrix.tobytes(), kinds[casters].tobytes(), pose, motion)
+
+    def _prepare_contact_shadows(self, arr, kinds, visible):
+        """Pack one oriented footprint per nearby visible car (parked and moving)."""
+        self._contact_count = 0
+        if not self.contact_shadows or not len(arr):
+            return
+        idx = np.flatnonzero(visible)
+        if not len(idx):
+            return
+        dist = np.linalg.norm(arr[idx, 12:15] - self._eye, axis=1)
+        near = dist < self.contact_shadow_distance
+        idx, dist = idx[near], dist[near]
+        if not len(idx):
+            return
+        if len(idx) > self.CONTACT_MAX:
+            idx = idx[np.argsort(dist)[:self.CONTACT_MAX]]
+        a = arr[idx]
+        k = np.minimum(kinds[idx], len(_CAR_LENGTHS) - 1)
+
+        def unit(v):
+            return v / np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-6)
+        rows = np.empty((len(idx), self.CONTACT_FLOATS), np.float32)
+        rows[:, 0:3] = a[:, 12:15]                 # model translation: origin on the road
+        rows[:, 3:6] = unit(a[:, 0:3])             # model +x: forward
+        rows[:, 6:9] = unit(a[:, 4:7])             # model +y: left
+        rows[:, 9] = _CAR_LENGTHS[k] * .5
+        rows[:, 10] = _CAR_WIDTHS[k] * .5
+        rows[:, 11] = _CAR_WHEELBASES[k]
+        rows[:, 12] = np.clip(a[:, 23], 0., 1.)    # spawn/recycle fade
+        self._contact_rows = rows
+        self._contact_count = len(rows)
+
+    def _draw_contact_shadows(self, common, light, sky):
+        """Dark soft footprint under every car: multiplies the road, clipped by the sun shadow."""
+        gl = self.gl
+        n = self._contact_count
+        if not self.contact_shadows or n == 0 or self.contact_shadow_strength <= 0.:
+            return
+        if self._contact_vao is None:
+            self._contact_vao = gl.glGenVertexArrays(1)
+            self._contact_corner_vbo = gl.glGenBuffers(1)
+            self._contact_inst_vbo = gl.glGenBuffers(1)
+            gl.glBindVertexArray(self._contact_vao)
+            corners = np.array([-1, -1, 1, -1, -1, 1, 1, 1], np.float32)
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._contact_corner_vbo)
+            gl.glBufferData(gl.GL_ARRAY_BUFFER, corners.nbytes, corners, gl.GL_STATIC_DRAW)
+            gl.glEnableVertexAttribArray(0)
+            gl.glVertexAttribPointer(0, 2, gl.GL_FLOAT, gl.GL_FALSE, 8, None)
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._contact_inst_vbo)
+            stride = self.CONTACT_FLOATS * 4
+            for loc, size, off in ((1, 3, 0), (2, 3, 12), (3, 3, 24), (4, 4, 36)):
+                gl.glEnableVertexAttribArray(loc)
+                gl.glVertexAttribPointer(loc, size, gl.GL_FLOAT, gl.GL_FALSE, stride, ctypes.c_void_p(off))
+                gl.glVertexAttribDivisor(loc, 1)
+        rows = np.ascontiguousarray(self._contact_rows[:n])
+        self._stream_instances(self._contact_inst_vbo, rows)
+        p = self.prog_contact
+        gl.glUseProgram(p); common(p); self._shadow_uniforms(p, light, sky)
+        self._float(p, "uMargin", max(0.05, self.contact_shadow_margin))
+        self._float(p, "uContactStrength", float(np.clip(self.contact_shadow_strength, 0., 1.)))
+        self._float(p, "uContactClip", float(np.clip(self.contact_shadow_clip, 0., 1.)))
+        self._float(p, "uContactFadeNear", self.contact_shadow_distance * .6)
+        self._float(p, "uContactFadeFar", self.contact_shadow_distance)
+        self._set_mrt(1)                            # colour only: never touch the material buffer
+        gl.glEnable(gl.GL_DEPTH_TEST)
+        gl.glDepthMask(gl.GL_FALSE)
+        gl.glDisable(gl.GL_CULL_FACE)
+        gl.glEnable(gl.GL_BLEND)
+        gl.glBlendFunc(gl.GL_ZERO, gl.GL_SRC_COLOR)  # dst *= (1 - darkness)
+        # Slope-scaled depth offset toward the eye (sign flips with reverse-Z) so the quad
+        # survives tilt mismatch with the road instead of being cut into it.
+        off = 1. if self._reverse_active else -1.
+        gl.glEnable(gl.GL_POLYGON_OFFSET_FILL)
+        gl.glPolygonOffset(off * 2., off * 8.)
+        gl.glBindVertexArray(self._contact_vao)
+        gl.glDrawArraysInstanced(gl.GL_TRIANGLE_STRIP, 0, 4, n)
+        gl.glDisable(gl.GL_POLYGON_OFFSET_FILL)
+        self.last_draw_calls += 1
+        gl.glDisable(gl.GL_BLEND)
+        gl.glDepthMask(gl.GL_TRUE)
+        gl.glBindVertexArray(0)
 
     def _draw_foliage_poles(self, chunks, planes, p, trees=True, *, tree_light=None):
         key = (trees, tuple(id(c) for c in chunks))
@@ -1981,6 +2082,13 @@ class Renderer:
         bufs = [gl.GL_COLOR_ATTACHMENT0, gl.GL_COLOR_ATTACHMENT1][:n]
         gl.glDrawBuffers(n, np.array(bufs, dtype=np.uint32))
         self._mrt_n = n
+
+    def _set_mrt_mat(self):
+        """Route fragment output 0 into the material target only (colour stays untouched)."""
+        if not self._mrt_on:
+            return
+        self.gl.glDrawBuffers(1, np.array([self.gl.GL_COLOR_ATTACHMENT1], dtype=np.uint32))
+        self._mrt_n = 3      # 1 = colour only, 2 = colour + material, 3 = material only
 
     def _ao_pass(self, view, proj):
         gl = self.gl
@@ -3028,8 +3136,11 @@ class Renderer:
         # Representative urban visibility: 25 km clear, down to 1.2 km in heavy weather.
         haze = float(np.clip(max(getattr(weather, "fog", 0.0), self.haze_floor), 0.0, 1.0))
         self.air_extinction = 3.912 / (25000.0 * (1200.0 / 25000.0) ** haze)
-        fog_near = max(1800.0, (cam.distance + self.stream_radius) * 0.88)
-        fog_far = max(2400.0, (cam.distance + self.stream_radius) * 1.20)
+        # The fog now ends just past the loaded tiles: the far edge of the streamed
+        # city dissolves into haze instead of drawing detail nobody can resolve,
+        # which keeps the chunk boundary hidden without a visible wall of fog.
+        fog_near = max(900.0, (cam.distance + self.stream_radius) * 0.50)
+        fog_far = max(1500.0, (cam.distance + self.stream_radius) * 0.80)
         night = float(sky.night)
         # Fog-aware LOD scaling: in heavy fog, reduce detail distances further
         # since objects are obscured anyway. 0.5x at max haze, 1.0x at clear.
@@ -3323,7 +3434,7 @@ class Renderer:
             self._lamp_uniforms(p)
             self._draw_foliage_poles(chunks, planes, p, trees=False)
 
-        # 6b. Light sprites (lamps, facade emissives, vehicle lamps) out to 2.2 km.
+        # 6b. Light sprites (lamps, facade emissives, vehicle lamps) out to 1.5 km.
         #     One instanced batch for the whole scene: the field culls behind and
         #     off-frustum sources on the CPU, the vertex shader repeats the test.
         if not wireframe and night > 0.05 and planes is not None:
@@ -3349,6 +3460,10 @@ class Renderer:
         if not wireframe:
             self._draw_skid_marks(common, getattr(weather, 'wetness', 0.0) if weather is not None else 0.0)
 
+        # 6c. Dark contact shadow under the cars (also before them, so the bodies cover it)
+        if not wireframe:
+            self._draw_contact_shadows(common, light, sky)
+
         # 7. Vehicles
         self._set_mrt(2)
         p = self.prog_vehicle
@@ -3358,6 +3473,7 @@ class Renderer:
         gl.glUniform3f(self._loc(p, "uTaillightColor"),  *_TAILLIGHT_COLOR)
         gl.glUniform3f(self._loc(p, "uGlowColor"),       *_GROUND_GLOW_COLOR)
         gl.glUniform3f(self._loc(p, "uLedColor"),        *_LED_COLOR)      # LED signature / DRL (material 11)
+        self._float(p, 'uWheelAO', self.wheel_ao)
         self._float(p, 'uTrafficClock', getattr(traffic, 'clock', self._tshader()))
         gl.glUniform4f(self._loc(p, "uPaintCoat"), self.paint_gloss, self.paint_orange_peel,
                        self.paint_flakes, self.paint_pearl)
@@ -3370,8 +3486,8 @@ class Renderer:
             gl.glBindVertexArray(self.moving_vaos[k])
             gl.glDrawElementsInstanced(gl.GL_TRIANGLES, self.vehicle_opaque_counts[k], gl.GL_UNSIGNED_INT, None, count)
             self.last_draw_calls += 1
-        # Translucent lamp lenses: pass 0 multiplies the scene by the lens transmittance (red tail
-        # tint), pass 1 adds the Fresnel sky/sun reflection. Depth-tested, no depth writes.
+        # Lamp lenses/cabin windows: pass 0 transmits the actual opaque scene/cabin;
+        # pass 1 adds Fresnel sky/sun reflection. Depth-tested, no depth writes.
         if any(self.vehicle_glass_counts[k] and self.moving_counts[k] for k in range(len(self.moving_counts))):
             self._set_mrt(1)
             gl.glEnable(gl.GL_BLEND)
@@ -3454,6 +3570,33 @@ class Renderer:
         # into their finished target instead, where the road can never reflect it.
         reflect = use_post and ((self.ssr_enabled and self.ssr_strength > 0.0)
                                 or (self.ao_enabled and self.ao_ok))
+        # 7e. Pane surface for reflections: cabin windows and lamp covers are drawn by the
+        # two-pass transmission path, which writes colour only, so the SSR march had no
+        # finish weight (and no depth) on them and skipped every car window.  This pass
+        # adds the pane's depth and material without touching colour, and runs after
+        # pedestrians, signals and precipitation so see-through glazing still shows them.
+        if (self._mrt_on and use_post and not wireframe and self.ssr_enabled
+                and self.ssr_strength > 0.0
+                and any(self.vehicle_glass_counts[k] and self.moving_counts[k]
+                        for k in range(len(self.moving_counts)))):
+            self._set_mrt_mat()
+            gp = self.prog_vehicle_glass
+            gl.glUseProgram(gp)
+            common(gp)
+            self._vec3(gp, "uOffset", (0, 0, 0))
+            gl.glUniform2f(self._loc(gp, "uScale"), 1, 1)
+            gl.glEnable(gl.GL_DEPTH_TEST)
+            gl.glDepthMask(gl.GL_TRUE)
+            gl.glDisable(gl.GL_BLEND)
+            gl.glDisable(gl.GL_CULL_FACE)
+            for k, count in enumerate(self.moving_counts):
+                if not count or not self.vehicle_glass_counts[k]: continue
+                gl.glBindVertexArray(self.moving_vaos[k])
+                gl.glDrawElementsInstanced(gl.GL_TRIANGLES, self.vehicle_glass_counts[k], gl.GL_UNSIGNED_INT,
+                                           ctypes.c_void_p(self.vehicle_opaque_counts[k]*4), count)
+                self.last_draw_calls += 1
+            self._set_mrt(2)
+
         if precip_ready and not reflect:
             self._draw_precip(cam, weather, sky, fog_near, fog_far, view, proj, eye)
 

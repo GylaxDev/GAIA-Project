@@ -36,7 +36,7 @@ _INSTANCE_FIRST = 8
 
 class PedestrianRenderer:
     MAX_INSTANCES = 400
-    DRAW_DISTANCE = 190.
+    DRAW_DISTANCE = 150.
     NEAR_DISTANCE = 34.
     BODY_RADIUS = 1.3                   # umbrella-wide bounding sphere, centred at the waist
     CITIZEN_UNIT = 12       # shared index with the water ripples: bound and restored around the draw

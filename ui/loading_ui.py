@@ -11,7 +11,8 @@ import math
 import random
 
 from . import theme as T
-from .ui_kit import alpha, ease_out, keycaps, logo_mark, mix, prompt_bar
+from .ui_kit import (activity, alpha, check_circle, divider, ease_out_expo, glass, keycaps, logo_mark, mix,
+                     progress, prompt_bar)
 
 TIPS = (
     "Press Tab to open the Garage and call any car to the road beside you.",
@@ -55,13 +56,14 @@ class Backdrop:
 
     def draw(self, ui, w, h, t, dim=1.0):
         horizon = h * 0.80
-        ui.gradient(0, 0, w, h, (0.012, 0.022, 0.048, 1.0), (0.05, 0.085, 0.15, 1.0))
+        # Refined gradient with warmer tones
+        ui.gradient(0, 0, w, h, (0.012, 0.018, 0.035, 1.0), (0.035, 0.055, 0.095, 1.0))
         for sx, sy, size, ph in self.stars:
             tw = 0.55 + 0.45 * math.sin(t * 1.3 + ph)
             ui.circle(sx * w, sy * h, size, (0.8, 0.88, 1.0, 0.45 * tw * dim))
-        # horizon glow
-        ui.gradient(0, horizon - h * 0.30, w, h * 0.30, (T.ACCENT[0], T.ACCENT[1], T.ACCENT[2], 0.0),
-                    (T.ACCENT[0], T.ACCENT[1], T.ACCENT[2], 0.16 * dim))
+        # Soft horizon glow
+        ui.gradient(0, horizon - h * 0.30, w, h * 0.30, (T.ACCENT_BLUE[0], T.ACCENT_BLUE[1], T.ACCENT_BLUE[2], 0.0),
+                    (T.ACCENT_BLUE[0], T.ACCENT_BLUE[1], T.ACCENT_BLUE[2], 0.16 * dim))
         for speed, col, windows, blds in self.layers:
             off = (t * speed) % self.PATTERN
             for rep in (-1, 0, 1):
@@ -76,6 +78,7 @@ class Backdrop:
                     ui.rect(x, top, bw, horizon - top + 2, (col[0], col[1], col[2], 1.0))
                     if windows:
                         self._windows(ui, x, top, bw, horizon - top, lights, t)
+        # Ground
         ui.rect(0, horizon, w, h - horizon, (0.012, 0.018, 0.03, 1.0))
         ui.gradient(0, horizon, w, 26, (0.0, 0.0, 0.0, 0.25), (0.0, 0.0, 0.0, 0.0))
 
@@ -98,19 +101,22 @@ class LoadingScreen:
     # ------------------------------------------------------------------ boot
     def draw_boot(self, ui, w, h, frac, label, version, t):
         self.backdrop.draw(ui, w, h, t)
-        ui.rect(0, 0, w, h, (0.0, 0.0, 0.0, 0.18))
+        ui.rect(0, 0, w, h, (0.0, 0.0, 0.0, 0.22))
         cx, cy = w / 2, h * 0.40
-        e = ease_out(t / 0.6)
-        logo_mark(ui, cx - 36, cy - 108 + (1 - e) * 14, 72.0, t)
-        ui.text("OSM 3D", cx, cy - 18 + (1 - e) * 14, 46, alpha(T.TEXT, e), anchor="center", weight="bold")
-        ui.text("City explorer", cx, cy + 40, T.T_LABEL, alpha(T.TEXT_3, e), anchor="center", weight="medium")
-        bw = min(420.0, w - 80)
-        bx, by = cx - bw / 2, cy + 104
+        e = ease_out_expo(t / 0.6)
+        logo_mark(ui, cx - 40, cy - 118 + (1 - e) * 14, 80.0, t)
+        ui.text("OSM 3D", cx, cy - 18 + (1 - e) * 14, 44, alpha(T.TEXT_PRIMARY, e), anchor="center", weight="bold")
+        ui.text("City explorer", cx, cy + 38, T.T_SUBHEAD, alpha(T.TEXT_TERTIARY, e), anchor="center", weight="medium")
+
+        bw = min(360.0, w - 80)
+        bx, by = cx - bw / 2, cy + 96
         self.shown += (frac - self.shown) * 0.18
-        ui.bar(bx, by, bw, 5, self.shown, color=T.SIGNAL, shimmer=t)
-        ui.text(label, bx, by + 16, T.T_BODY, T.TEXT_2, weight="medium")
-        ui.text(f"{int(self.shown * 100)}%", bx + bw, by + 16, T.T_BODY, T.TEXT_3, anchor="right", weight="semibold")
-        ui.text(f"v{version}", cx, h - 34, T.T_SMALL, T.TEXT_4, anchor="center", weight="medium")
+
+        progress(ui, bx, by, bw, 5, self.shown, T.TEXT_PRIMARY)
+        ui.text(label, bx, by + 18, T.T_CAPTION_2, T.TEXT_SECONDARY, weight="medium")
+        ui.text(f"{int(self.shown * 100)}%", bx + bw, by + 18, T.T_CAPTION_2, T.TEXT_TERTIARY, anchor="right",
+                weight="medium")
+        ui.text(f"Version {version}", cx, h - 34, T.T_CAPTION_2, T.TEXT_QUATERNARY, anchor="center", weight="medium")
 
     # ---------------------------------------------------------------- travel
     def draw_travel(self, ui, w, h, t, *, title, coords, elapsed, frac, steps, detail="", hint=None,
@@ -118,56 +124,66 @@ class LoadingScreen:
         """``steps``: [(label, state)] with state done / active / todo."""
         self.backdrop.draw(ui, w, h, t)
         ui.gradient(0, 0, w, h, (0.0, 0.0, 0.0, 0.55), (0.0, 0.0, 0.0, 0.10))
+
         wide = w >= 900
         x = 72.0 if wide else 30.0
         pw = min(560.0, w - 2 * x)
         y = max(40.0, h * 0.14)
-        e = ease_out(t / 0.5)
+        e = ease_out_expo(t / 0.5)
         x -= (1 - e) * 24
-        ui.text("TRAVELLING TO", x, y, T.T_CAPTION, T.SIGNAL, weight="semibold")
+
+        ui.text("Travelling to", x, y, T.T_BODY, T.ACCENT_BLUE, weight="semibold")
         name = title if ui.text_w(title, 44, weight="bold") <= pw else ui.fit(title, 34, pw, weight="bold")
         size = 44 if name is title else 34
-        ui.text(name, x, y + 20, size, T.TEXT, weight="bold")
-        ui.text(coords, x, y + 20 + size + 10, T.T_BODY, T.TEXT_3, weight="medium")
+        ui.text(name, x, y + 22, size, T.TEXT_PRIMARY, weight="bold")
+        ui.text(coords, x, y + 22 + size + 10, T.T_BODY, T.TEXT_TERTIARY, weight="medium")
+
         self.shown += (frac - self.shown) * 0.12
-        by = y + 20 + size + 52
-        ui.bar(x, by, pw - 60, 6, self.shown, color=T.SIGNAL, shimmer=t)
-        ui.text_c(f"{int(self.shown * 100)}%", x + pw, by + 3, T.T_LABEL, T.TEXT, anchor="right", weight="semibold")
-        ui.text(f"{int(elapsed)} s", x, by + 18, T.T_SMALL, T.TEXT_4, weight="medium")
-        sy = by + 48
-        row = 30.0
+        by = y + 22 + size + 54
+
+        bar_w = pw - 64
+        progress(ui, x, by, bar_w, 6, self.shown, T.ACCENT_BLUE, shimmer=(t * 0.6) % 1.0)
+        ui.text_c(f"{int(self.shown * 100)}%", x + pw, by + 3, T.T_SUBHEAD, T.TEXT_PRIMARY, anchor="right",
+                  weight="semibold")
+        ui.text(f"{int(elapsed)} s elapsed", x, by + 18, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="medium")
+
+        sy = by + 52
+        row = 32.0
         for i, (label, state) in enumerate(steps):
             cy = sy + i * row + row / 2
             if state == "done":
-                ui.tick(x + 10, cy, 9, T.OK)
-                col, wt = T.TEXT_2, "regular"
+                check_circle(ui, x + 10, cy, 8.5, T.OK_GREEN)
+                col, wt = T.TEXT_SECONDARY, "regular"
             elif state == "active":
-                ui.spinner(x + 10, cy, 6, t, color=T.SIGNAL, dots=8)
-                col, wt = T.TEXT, "semibold"
+                activity(ui, x + 10, cy, 8, t, T.TEXT_PRIMARY)
+                col, wt = T.TEXT_PRIMARY, "semibold"
             else:
-                ui.circle(x + 10, cy, 3, (1, 1, 1, 0.25))
-                col, wt = T.TEXT_4, "regular"
-            ui.text_c(label, x + 34, cy, T.T_BASE + 1, col, weight=wt)
+                ui.ring(x + 10, cy, 7.5, 1.4, (1, 1, 1, 0.22))
+                col, wt = T.TEXT_QUATERNARY, "regular"
+            ui.text_c(label, x + 34, cy, T.T_SUBHEAD, col, weight=wt)
             if state == "active" and detail:
-                ui.text_c(ui.fit(detail, T.T_SMALL, pw * 0.45), x + pw, cy, T.T_SMALL, T.TEXT_3,
+                ui.text_c(ui.fit(detail, T.T_CAPTION_2, pw * 0.45), x + pw, cy, T.T_CAPTION_2, T.TEXT_TERTIARY,
                           anchor="right", weight="medium")
+
         ly = sy + len(steps) * row + 10
         if hint:
-            ui.text_c(ui.fit(hint, T.T_SMALL, pw), x, ly + 8, T.T_SMALL, T.WARN, weight="medium")
+            ui.text_c(ui.fit(hint, T.T_CAPTION_2, pw), x, ly + 8, T.T_CAPTION_2, T.WARN_AMBER, weight="medium")
             ly += 26
         if lines and h - ly > 150:
-            ui.divider(x, ly + 4, pw)
+            divider(ui, x, ly + 4, pw, T.HAIRLINE)
             ly += 14
             colors = level_colors or {}
             for stamp, level, msg in lines:
-                ui.text(ui.fit(f"{stamp}  {msg}", T.T_SMALL, pw), x, ly, T.T_SMALL,
-                        colors.get(level, T.TEXT_3), weight="regular")
+                ui.text(ui.fit(f"{stamp}  {msg}", T.T_CAPTION_2, pw), x, ly, T.T_CAPTION_2,
+                        colors.get(level, T.TEXT_TERTIARY), weight="regular")
                 ly += 18
-        # rotating tip
+
+        # Rotating tip in a glass capsule
         tip = TIPS[int(elapsed // 7 + self._tip0) % len(TIPS)]
-        ui.container(x, h - 128, min(pw + 60, w - 2 * x), 52, "panel", r=T.R_PANEL - 2, shadow=False)
-        ui.text("TIP", x + 18, h - 128 + 19, T.T_CAPTION, T.SIGNAL, weight="semibold")
-        ui.text_c(ui.fit(tip, T.T_BODY, min(pw + 60, w - 2 * x) - 76), x + 52, h - 128 + 26, T.T_BODY, T.TEXT_2,
-                  weight="medium")
+        tip_w = min(pw + 60, w - 2 * x)
+        glass(ui, x, h - 132, tip_w, 52, 26, "hud")
+        ui.text_c("Tip", x + 22, h - 132 + 26, T.T_CAPTION_2, T.ACCENT_BLUE, weight="semibold")
+        ui.text_c(ui.fit(tip, T.T_BODY, tip_w - 90), x + 54, h - 132 + 26, T.T_BODY, T.TEXT_SECONDARY, weight="medium")
+
         items = ([("Esc", "Cancel")] if cancel else []) + [("F2", "Full log")]
         prompt_bar(ui, w, h, items)

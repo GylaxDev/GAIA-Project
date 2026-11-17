@@ -90,6 +90,7 @@ class Overlay2D:
         self._clips = []
         self.now, self.dt, self._last = time.time(), 1 / 60, time.time()
         self._anim = {}
+        self._spring = {}
         self._font_paths = {}
 
     # ---------------------------------------------------------------- frame
@@ -158,6 +159,28 @@ class Overlay2D:
         if abs(target - v) < 0.002: v = target
         self._anim[key] = v
         return v
+
+    def anim_spring(self, key, target, damping=0.85, stiffness=180.0):
+        """Spring-physics animation per widget key — natural, Apple-like motion.
+
+        ``damping`` < 1 gives a slight overshoot; ``stiffness`` controls speed.
+        State (position + velocity) is stored per key for critically-damped springs.
+        """
+        state = self._spring.get(key)
+        if state is None:
+            state = [target if key not in self._spring else 0.0, 0.0]  # [pos, vel]
+            self._spring[key] = state
+        pos, vel = state
+        dt = self.dt
+        # Semi-implicit Euler spring integration
+        accel = stiffness * (target - pos) - 2.0 * damping * math.sqrt(stiffness) * vel
+        vel += accel * dt
+        pos += vel * dt
+        # Snap when close enough and slow
+        if abs(target - pos) < 0.002 and abs(vel) < 0.02:
+            pos, vel = target, 0.0
+        state[0], state[1] = pos, vel
+        return pos
 
     # ------------------------------------------------------------ low level
     def _set(self, mode, color=(1, 1, 1, 1), invert=0.0):

@@ -4,14 +4,13 @@ from __future__ import annotations
 from . import icons
 from . import theme as T
 from .menu_ui import Page, frame_rect
-from .ui_kit import alpha, button, chip, close_button, heading, inside, logo_mark, paragraph
+from .ui_kit import (button, close_button, group, heading, inside, logo_mark, paragraph, separator, sheet)
 
 CREDITS = (
     ("Map data", "© OpenStreetMap contributors", "Buildings, roads and places, ODbL"),
     ("Terrain", "AWS Open Data elevation tiles", "Terrarium-encoded DEM, no key needed"),
     ("Stars", "HYG v4.1 star catalogue", "David Nash / Astronomy Nexus, CC BY-SA 4.0"),
     ("Typeface", "Inter", "The Inter Project Authors, SIL Open Font License 1.1"),
-    ("Engine sound", "Recorded V8 loops", "Baked from user-supplied recordings"),
 )
 
 
@@ -26,58 +25,74 @@ class AboutPage(Page):
         host = self.menu.host
         fx, fy, fw, fh = frame_rect(w, h, 940, 620)
         fy += self.menu.oy()
-        ui.container(fx, fy, fw, fh, "popup", r=T.R_PANEL + 2)
+
+        sheet(ui, fx, fy, fw, fh)
         self.hits.add((fx, fy, fw, fh), "panel")
-        cr = close_button(ui, fx + fw - 28 - 32, fy + 24, mouse)
+
+        cr = close_button(ui, fx + fw - 32 - 32, fy + 30, mouse)
         self.hits.add(cr, "close")
 
-        # identity block
-        pad = 30
-        logo_mark(ui, fx + pad, fy + 28, 56.0)
-        ui.text("OSM 3D", fx + pad + 74, fy + 26, T.T_HEAD + 8, T.TEXT, weight="bold")
-        ui.text(f"Version {getattr(host, 'version', '1.0.0')}", fx + pad + 76, fy + 62, T.T_BODY, T.TEXT_3,
+        # Identity block
+        pad = 32
+        logo_mark(ui, fx + pad, fy + 28, 60.0)
+        ui.text("OSM 3D", fx + pad + 78, fy + 30, T.T_DISPLAY - 2, T.TEXT_PRIMARY, weight="bold")
+        ui.text(f"Version {getattr(host, 'version', '1.0.0')}", fx + pad + 79, fy + 64, T.T_BODY, T.TEXT_TERTIARY,
                 weight="medium")
+
         body_w = fw - 2 * pad
         paragraph(ui, "Explore real cities in 3D. Buildings, streets and terrain stream in from OpenStreetMap "
                       "while traffic, pedestrians, weather and a physically based sky bring them to life. "
                       "Fly over, walk the pavements, or take any car for a drive.",
-                  fx + pad, fy + 104, min(body_w, 640), T.T_BASE, T.TEXT_2, lead=22)
-        ui.divider(fx + pad, fy + 176, body_w)
+                  fx + pad, fy + 108, min(body_w, 640), T.T_CALLOUT, T.TEXT_SECONDARY, lead=22)
 
         two = fw >= 760
-        colw = (body_w - (36 if two else 0)) / (2 if two else 1)
-        # credits
-        heading(ui, "Data & credits", fx + pad, fy + 196)
-        y = fy + 222
-        for kind, name, note in CREDITS:
-            ui.text(kind.upper(), fx + pad, y + 2, T.T_CAPTION - 1, T.TEXT_4, weight="semibold")
-            ui.text(ui.fit(name, T.T_BASE, colw - 110), fx + pad + 96, y - 1, T.T_BASE, T.TEXT, weight="semibold")
-            ui.text(ui.fit(note, T.T_SMALL, colw - 110), fx + pad + 96, y + 19, T.T_SMALL, T.TEXT_3)
-            y += 48
-        # system
-        sx = fx + pad + (colw + 36 if two else 0)
-        sy = fy + 196 if two else y + 14
-        heading(ui, "This session", sx, sy)
+        gap = 24
+        colw = (body_w - (gap if two else 0)) / (2 if two else 1)
+        top = fy + 196
+
+        # Credits
+        heading(ui, "Data & credits", fx + pad + 6, top)
+        rh = 52
+        gy = top + 24
+        group(ui, fx + pad, gy, colw, rh * len(CREDITS))
+        for i, (kind, name, note) in enumerate(CREDITS):
+            ry = gy + i * rh
+            ui.text(ui.fit(name, T.T_CALLOUT, colw - 130, weight="medium"), fx + pad + 16, ry + 9, T.T_CALLOUT,
+                    T.TEXT_PRIMARY, weight="medium")
+            ui.text(ui.fit(note, T.T_CAPTION_2, colw - 130), fx + pad + 16, ry + 30, T.T_CAPTION_2, T.TEXT_TERTIARY)
+            ui.text_c(kind, fx + pad + colw - 16, ry + rh / 2, T.T_CAPTION_2, T.TEXT_TERTIARY, anchor="right",
+                      weight="medium")
+            if i < len(CREDITS) - 1:
+                separator(ui, fx + pad + 16, ry + rh - 0.5, colw - 32)
+
+        # System info
+        sx = fx + pad + (colw + gap if two else 0)
+        sy = top if two else gy + rh * len(CREDITS) + 20
+        heading(ui, "This session", sx + 6, sy)
         diag = host.diagnostics() if hasattr(host, "diagnostics") else {}
         rows = (("Graphics card", diag.get("gpu", "–")), ("Frame rate", diag.get("fps", "–")),
                 ("City chunks", diag.get("chunks", "–")), ("Geometry memory", diag.get("vram", "–")),
                 ("Traffic", diag.get("traffic", "–")), ("Cache folder", diag.get("cache", "–")))
-        ry = sy + 26
-        for k, v in rows:
-            ui.text(k, sx, ry + 1, T.T_SMALL, T.TEXT_3, weight="medium")
-            ui.text(ui.fit(str(v), T.T_BODY, colw - 120), sx + colw, ry, T.T_BODY, T.TEXT_2, anchor="right",
-                    weight="semibold")
-            ui.divider(sx, ry + 25, colw, (1, 1, 1, 0.06))
-            ry += 33
-        # actions
-        by = fy + fh - 28 - 36
-        b_log = (fx + pad, by, 170.0, 36.0)
-        b_ctl = (fx + pad + 182, by, 170.0, 36.0)
+        kh = 44
+        gy2 = sy + 24
+        group(ui, sx, gy2, colw, kh * len(rows))
+        for i, (k, v) in enumerate(rows):
+            ry = gy2 + i * kh
+            ui.text_c(k, sx + 16, ry + kh / 2, T.T_BODY, T.TEXT_SECONDARY)
+            ui.text_c(ui.fit(str(v), T.T_BODY, colw - 150), sx + colw - 16, ry + kh / 2, T.T_BODY, T.TEXT_PRIMARY,
+                      anchor="right", weight="medium")
+            if i < len(rows) - 1:
+                separator(ui, sx + 16, ry + kh - 0.5, colw - 32)
+
+        # Actions
+        by = fy + fh - 28 - 40
+        b_log = (fx + pad, by, 176.0, 40.0)
+        b_ctl = (fx + pad + 188, by, 150.0, 40.0)
         self.hits.add(b_log, "log")
         self.hits.add(b_ctl, "controls")
-        button(ui, b_log, "Streaming log", mouse, key="ab_log", kind="ghost", icon="terminal",
+        button(ui, b_log, "Streaming log", mouse, key="ab_log", kind="secondary", icon="terminal",
                focus=self.focus == 0)
-        button(ui, b_ctl, "Controls", mouse, key="ab_ctl", kind="ghost", icon="keyboard", focus=self.focus == 1)
+        button(ui, b_ctl, "Controls", mouse, key="ab_ctl", kind="secondary", icon="keyboard", focus=self.focus == 1)
 
     def prompts(self):
         return [("← →", "Choose"), ("Enter", "Select"), ("Esc", "Back")]

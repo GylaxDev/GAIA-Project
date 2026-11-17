@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from ..core import telemetry as tm
-from ..audio.car import CarAudio
+from ..audio.silent import SilentAudio
 from ..vehicles.skidmarks import SkidMarks
 from ..audio.uisound import UiSound
 from ..core.camera import Camera
@@ -42,7 +42,6 @@ from ..ui.navigation_ui import NavigationPanel
 from ..world.places import parse_places
 from ..ui.settings_ui import SettingsPanel
 from ..ui import theme as T
-from ..ui import RadialWheelManager, create_hacking_wheel, create_vehicle_wheel, create_combat_wheel
 from ..render.overlay import Overlay2D, TileCache
 from ..vehicles import pick
 from ..core.projection import ChunkGrid, LocalProjection, tile_bounds, tile_d2
@@ -650,7 +649,6 @@ class App(MenuHost):
         self._init_menu_state(cache_dir, skip_menu)
         tm.LOG.attach_file(Path(cache_dir) / "osm3d.log")
         tm.LOG.info("starting OSM 3D")
-        # Initialize gamepad for radial wheel navigation
         self._joystick = None
         if pygame.joystick.get_count() > 0:
             self._joystick = pygame.joystick.Joystick(0)
@@ -667,10 +665,12 @@ class App(MenuHost):
         w, h = pygame.display.get_window_size()
         self.ui = Overlay2D()               # first, so the boot screen can draw during the slow steps
         self.ui.scale = self.ui_scale
-        self._boot(0.08, "Starting audio")
-        self.audio = CarAudio()
+        self._boot(0.08, "Starting up")
+        # Sound was removed from the game: the silent backend keeps the engine,
+        # tyre, impact and interface-sound call sites inert and device-free.
+        self.audio = SilentAudio()
         self.skidmarks = SkidMarks()
-        self.ui_sound = UiSound(self.audio)
+        self.ui_sound = UiSound(None)
         self._boot(0.22, "Preparing the renderer")
         self.renderer = Renderer(w, h, shadow_size, shadows, vehicle_shadow_size=vehicle_shadow_size,
                                  near_shadow_size=near_shadow_size)
@@ -720,16 +720,11 @@ class App(MenuHost):
         self._init_walking()
         self._frame_sky = None            # sky state computed once per frame by _render
 
-        # Per-frame key/mouse press state for radial wheel
+        # Per-frame key/mouse press state
         self._keys_pressed = set()
         self._mouse_left_pressed = False
         self._mouse_right_pressed = False
 
-        # Radial wheel (Watch Dogs style ability menu)
-        self._radial_wheel = RadialWheelManager()
-        self._radial_wheel.register("hacking", create_hacking_wheel(self._on_radial_action))
-        self._radial_wheel.register("vehicle", create_vehicle_wheel(self._on_radial_action))
-        self._radial_wheel.register("combat", create_combat_wheel(self._on_radial_action))
         self._boot(0.82, "Building the menus")
         self._init_menu()
         self._title_pending = bool(self.start_menu)
@@ -897,52 +892,6 @@ class App(MenuHost):
 
     def _say(self, msg, secs=5.0):
         self.message = (msg, time.time() + secs)
-
-    def _on_radial_action(self, action_id: str):
-        """Handle radial wheel action selection."""
-        # Map action IDs to actual game functions
-        if action_id == "profile":
-            # Profile nearest person/vehicle in view
-            self._say("Profiling...", 2.0)
-        elif action_id == "hack":
-            # Hack nearest hackable object
-            self._say("Hacking...", 2.0)
-        elif action_id == "camera":
-            # Switch to nearest camera view
-            self._say("Camera access...", 2.0)
-        elif action_id == "distract":
-            # Create distraction
-            self._say("Distraction deployed", 2.0)
-        elif action_id == "block":
-            # Block communications
-            self._say("Comms blocked", 2.0)
-        elif action_id == "trigger":
-            # Trigger environmental hazard
-            self._say("Triggered!", 2.0)
-        elif action_id == "enter":
-            # Enter vehicle
-            if self.driving.active:
-                self._toggle_driving()
-            else:
-                self._toggle_driving()
-        elif action_id == "hack_vehicle":
-            self._say("Vehicle hacked", 2.0)
-        elif action_id == "track":
-            self._say("Tracking vehicle", 2.0)
-        elif action_id == "pistol":
-            self._say("Pistol equipped", 2.0)
-        elif action_id == "rifle":
-            self._say("Rifle equipped", 2.0)
-        elif action_id == "grenade":
-            self._say("Grenade equipped", 2.0)
-        elif action_id == "lure":
-            self._say("Lure deployed", 2.0)
-        elif action_id == "drone":
-            self._say("Drone deployed", 2.0)
-        elif action_id == "rc":
-            self._say("RC car deployed", 2.0)
-        else:
-            self._say(f"Action: {action_id}", 2.0)
 
     def _travel(self, lat, lon, label):
         if self.loading:
@@ -1578,7 +1527,7 @@ class App(MenuHost):
         if self.menu.is_open and ev.type not in (pg.VIDEORESIZE, getattr(pg, "WINDOWRESIZED", -1)):
             return self._menu_event(ev)
 
-        # Track key/mouse presses for radial wheel
+        # Track key/mouse presses
         if ev.type == pg.KEYDOWN and not getattr(ev, 'repeat', False):
             self._keys_pressed.add(ev.key)
         elif ev.type == pg.MOUSEBUTTONDOWN:
@@ -1680,16 +1629,6 @@ class App(MenuHost):
                     if not getattr(ev, 'repeat', False): self.driving.car.lights = not self.driving.car.lights
                 elif k == pg.K_f: self._focus()
                 elif k == pg.K_x: self.wireframe = not self.wireframe
-                elif k == pg.K_r:
-                    if not getattr(ev, 'repeat', False):
-                        mods = pg.key.get_mods()
-                        if mods & pg.KMOD_CTRL:
-                            self._radial_wheel.toggle("combat")
-                        elif mods & pg.KMOD_SHIFT:
-                            self._radial_wheel.toggle("vehicle")
-                        else:
-                            self._radial_wheel.toggle("hacking")
-                        self._say(f"Radial wheel: {self._radial_wheel.context}", 1.5)
                 elif k == pg.K_c: self.show_edges = not self.show_edges
                 elif k == pg.K_v:
                     r = self.renderer
@@ -1954,10 +1893,6 @@ class App(MenuHost):
                         ("/", "world search"), ("1 - 0", "cities"),
                         ("Right-click map", "navigate to a pin"), ("Click minimap place", "choose destination"),
                         ("Double-click map", "travel here"), ("Enter on map", "travel to marker"))),
-        ("Radial Wheel", (("R", "hacking wheel"), ("Shift + R", "vehicle wheel"),
-                         ("Ctrl + R", "combat wheel"), ("Gamepad LB", "toggle wheel"),
-                         ("WASD / Stick", "navigate"), ("Enter / A", "confirm"),
-                         ("Esc / B", "cancel"))),
         ("Display", (("X", "wireframe"), ("C", "edges"), ("V", "colour grade"),
                      ("B", "vignette"), ("F8", "anti-aliasing"), ("F9", "hide HUD"),
                      ("F11", "full screen"))),
@@ -2154,10 +2089,6 @@ class App(MenuHost):
         if self.menu.is_open:
             self.menu.draw(self.ui, lw, lh, self._lm(self.pg.mouse.get_pos()), dt)
 
-        # Draw radial wheel (on top of everything)
-        if self._radial_wheel.is_open():
-            self._radial_wheel.draw(self.ui, w, h, self._lm(self.pg.mouse.get_pos()), time.time())
-
         self._hud_common(lw, lh, dt)
         self._update_cursor(lw, lh)
         self.ui.end()
@@ -2212,7 +2143,6 @@ class App(MenuHost):
                 self.camera.update(raw if (self.driving.active or self.walker.active) else dt)
             self._update_navigation()
 
-            # Update radial wheel
             mouse_pos = self._lm(self.pg.mouse.get_pos())
             keys = self.pg.key.get_pressed()
             # pg.key.get_pressed() returns a ScancodeWrapper (not iterable in pygame-ce 2.5+)
@@ -2233,7 +2163,7 @@ class App(MenuHost):
             self._mouse_left_pressed = False
             self._mouse_right_pressed = False
 
-            # Gamepad state for radial wheel navigation
+            # Gamepad state
             gamepad_state = {}
             if hasattr(self, '_joystick') and self._joystick:
                 j = self._joystick
@@ -2245,8 +2175,6 @@ class App(MenuHost):
                 gamepad_state["b_pressed"] = j.get_button(1)
                 gamepad_state["lb_pressed"] = j.get_button(4) if j.get_numbuttons() > 4 else False
                 gamepad_state["rb_pressed"] = j.get_button(5) if j.get_numbuttons() > 5 else False
-
-            self._radial_wheel.update(dt, mouse_pos, key_dict, gamepad_state)
 
             self._render(dt)
             pg.display.flip()
