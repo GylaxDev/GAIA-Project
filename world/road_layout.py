@@ -76,6 +76,13 @@ def road_width(road):
     return width
 
 
+def road_surface_lift(highway, index=0, *, footpath=False):
+    """Shared ribbon/decor datum, including the millimetre overlap tie-break."""
+    if footpath: return .10
+    rank = {'motorway': 5, 'trunk': 5, 'primary': 4, 'secondary': 3, 'tertiary': 2}.get(highway, 1)
+    return .012*rank + .004*((index*2654435761) % 97)/97.
+
+
 def lane_offsets(width, own, opposite=0):
     if own <= 0: return ()
     spacing = float(width) / (own + opposite)

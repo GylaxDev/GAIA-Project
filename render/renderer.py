@@ -16,6 +16,7 @@ from ..world.data_fetcher import build_tree_template
 from ..world.foliage import build_leaf_textures, build_leaf_mipmaps
 from ..world.tree_models import TREE_CENTER_Z, TREE_RADIUS, tree_lod_levels
 from ..world.ground_textures import build_ground_textures, build_ground_mipmaps
+from ..world.street_furniture import streetpole_template, LAMP_LENS_DROP
 from ..world.water_ripples import build_water_ripples, build_water_ripple_mipmaps
 from ..world.mesh_extruder import (MeshData, build_all_vehicle_templates,
                             _HEADLIGHT_COLOR, _TAILLIGHT_COLOR, _GROUND_GLOW_COLOR)
@@ -26,10 +27,11 @@ from ..vehicles.vehicle_models import LED_COLOR as _LED_COLOR, animation_metadat
 from ..vehicles.vehicle_instances import (VEHICLE_STRIDE, VEHICLE_BYTES, INSTANCE_ATTRIBUTES, normalize_instances,
                                           LENGTHS as _CAR_LENGTHS, WIDTHS as _CAR_WIDTHS, WHEELBASES as _CAR_WHEELBASES)
 from ..traffic.traffic_signals import build_signal_template, SIGNAL_CENTER, SIGNAL_RADIUS
-from ..world.weather_system import PrecipitationRenderer, RainOcclusionMap, wind_displacement
+from ..world.weather_system import PrecipitationRenderer, RainOcclusionMap, wind_displacement, HEADLIGHT_BEAMS
 from ..core.astronomy import REFERENCE_DATE, celestial_state, parse_date
 from ..core.atmosphere import horizon_display
 from .starfield import StarField
+from ..shaders.cityhaze import HAZE_FS, HAZE_APPLY_FS, HAZE_DEFAULTS, HAZE_GLOW_TINT, HAZE_MAX_LAMPS
 from ..shaders import (
     SKY_VS, SKY_FS, SKY_LUT_VS, SKY_LUT_FS,
     BUILDING_VS, BUILDING_FS,
@@ -58,7 +60,7 @@ _LAMP_TYPES = np.array([
 ], np.float32)
 _LAMP_GAIN = np.array([1.60, 1.25, 1.00, 1.00], np.float32)
 _LAMP_ARM_LEN_TALL, _LAMP_ARM_LEN_SHORT = 2.4, 1.7
-_LAMP_LENS_DROP = 0.30
+_LAMP_LENS_DROP = LAMP_LENS_DROP
 
 def _hash01(x, y, salt):
     h = np.sin(x.astype(np.float64) * 12.9898 + y.astype(np.float64) * 78.233 + salt * 37.719) * 43758.5453
@@ -95,15 +97,7 @@ def _box(cx, cy, cz, hx, hy, hz, part):
     return np.asarray(V, np.float32), np.asarray(I, np.uint32)
 
 def build_streetpole_template():
-    parts = [
-        _box(0.0, 0.0, 0.5, 0.11, 0.11, 0.5, 0.0),
-        _box(0.5, 0.0, -0.08, 0.5, 0.055, 0.06, 1.0),
-        _box(0.0, 0.0, -0.20, 0.55, 0.20, 0.12, 2.0),
-    ]
-    V, I, off = [], [], 0
-    for v, i in parts:
-        V.append(v); I.append(i + off); off += len(v)
-    return np.vstack(V), np.concatenate(I)
+    return streetpole_template()
 
 # ---------------------------------------------------------------- sky state
 def _smoothstep(e0, e1, x):
@@ -499,6 +493,8 @@ class Renderer:
         self.prog_ae_adapt    = self._program(BLOOM_VS, AE_ADAPT_FS)
         self.prog_ssr         = self._program(BLOOM_VS, SSR_FS)
         self.prog_ao          = self._program(BLOOM_VS, AO_FS)
+        self.prog_haze        = self._program(BLOOM_VS, HAZE_FS)
+        self.prog_haze_apply  = self._program(BLOOM_VS, HAZE_APPLY_FS)
         # Light sprites are drawn past the pole/geometry LOD so the skyline keeps
         # its lamps when the buildings have faded into fog, but the range is kept
         # inside the fog so the thousands of sprites beyond it are never packed.
@@ -683,8 +679,10 @@ class Renderer:
         self._neon_pos = np.zeros((48, 3), np.float32)
         self._neon_col = np.zeros((48, 3), np.float32)
         self._neon_n = 0
-        self.bloom_strength = 0.08
-        self.bloom_threshold = 3.0  # 20% soft knee starts at 2.4 exposed HDR units
+        # Night neon sits at ~3-4 exposed HDR units, so the old 3.0 threshold (knee from 2.4) let almost
+        # nothing bloom.  1.5 lets signs and lamps glow; strength is kept moderate.
+        self.bloom_strength = 0.14
+        self.bloom_threshold = 1.5  # 20% soft knee starts at 1.2 exposed HDR units
         self._t0 = time.time()
         # GTA-style grade (V toggles).  grade_strength scales the whole look.
         self.grade_enabled = True
@@ -692,8 +690,8 @@ class Renderer:
         self.day_threshold = 4.0     # onset at 3.2: ordinary sunlit materials stay below bloom
         self.grade_strength = 1.0
         # Film look: 0 neutral, 1 Colorful, 2 Cinematic.  Cycled with V.
-        self.look = 2
-        self.LOOK_NAMES = ("Neutral", "Colorful", "Cinematic")
+        self.look = 3
+        self.LOOK_NAMES = ("Neutral", "Colorful", "Cinematic", "Cyberpunk")
         # Eye adaptation.  The scene buffer is linear HDR (already x sky.exposure); the meter
         # averages log luminance on the GPU and a 1x1 texture follows it with an
         # asymmetric time constant (the eye closes down faster than it opens up).
@@ -702,11 +700,18 @@ class Renderer:
         self.ae_brightness = self.AE_DEFAULT_BRIGHTNESS  # stops on the metered target
         self.ae_key_day = 0.13         # target mean luminance (post-exposure) in daylight
         self.ae_key_night = 0.045     # ... and at night, so dark streets stay dark
-        self.ae_min_ev, self.ae_max_ev = -2.0, 2.2  # a little more headroom in shaded streets
-        self.ae_speed_brighter = 2.6   # 1/s, exposure falling
-        self.ae_speed_darker = 0.9     # 1/s, exposure rising
+        self.ae_min_ev, self.ae_max_ev = -2.5, 3.2  # headroom to open up deep shade (and clip what is outside)
+        # Cinematic timing: a slow settle (a few seconds) plus a quick partial reflex, and a dead-band
+        # so tiny metering changes never make the exposure hunt.
+        self.ae_speed_brighter = 1.2   # 1/s, exposure falling (stepping into the sun)
+        self.ae_speed_darker = 0.45    # 1/s, exposure rising (stepping into shade)
+        self.ae_dead_band = 0.12       # EV
+        self.ae_fast_share = 0.35      # share of a sudden change the quick reflex answers at once
+        self.ae_fast_rate = 5.0        # 1/s
+        # Filmic contrast (linear light, pivoting on the adaptation key): 1 = none.
+        self.contrast = 1.28
         self.ev_comp = 0.0             # manual exposure compensation (stops)
-        self.wide_glow = 0.02          # faint wide-angle lens scatter
+        self.wide_glow = 0.04          # wide-angle lens scatter / halation around bright signs
         self.streak_gain = 0.02        # anamorphic streak, Matrix look only
         self.letterbox = 0.0
         # Lens flare of a stopped-down lens (N toggles, Shift+N switches f/22 <-> f/14)
@@ -728,6 +733,14 @@ class Renderer:
         # Floor on aerosol haze (0 = clear 25 km air, 1 = 1.2 km fog). A milky mid-distance
         # haze is a large part of Cinematic look; weather fog can only raise it.
         self.haze_floor = 0.32
+        # Volumetric city haze (shaders/cityhaze.py): coloured, light-catching air with height fog,
+        # drifting patches, neon halos and headlight shafts.  Tune live through ``city_haze``
+        # (keys are HAZE_DEFAULTS); city_haze_enabled switches the pass off.
+        self.city_haze_enabled = True
+        self.city_haze = dict(HAZE_DEFAULTS)
+        self.city_haze_floor = None       # world z of the street; None follows the camera target
+        self._haze_floor_s = None
+        self.haze_ok = False
         # Cinematic vignette (B toggles).  strength = darkening at the corners.
         self.vignette = 0.18
         self.vignette_start = 0.55
@@ -739,6 +752,7 @@ class Renderer:
         self._cur_car = self._prev_car = None
         self.speed_fov = True         # chase-camera speed FOV effect (settings switch)
         self._cur_vp = None           # view-projection the current frame was drawn with
+        self._cur_proj_z = (0.0, 1.0)
         self._prev_vp = None          # ... and the previous one, for the reprojection
         self._vp_time = None
         self._vp_eye = None
@@ -888,7 +902,7 @@ class Renderer:
         gl = self.gl
         gl.glActiveTexture(gl.GL_TEXTURE0 + 4)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.leaf_tex)
-        gl.glUniform1i(self._loc(p, "uLeafTex"), 4)
+        self._int(p, "uLeafTex", 4)
         normal_loc = self._loc(p, 'uLeafNormalTex')
         if normal_loc >= 0:
             gl.glActiveTexture(gl.GL_TEXTURE0 + 3)
@@ -954,7 +968,7 @@ class Renderer:
         gl = self.gl
         gl.glActiveTexture(gl.GL_TEXTURE0 + self.GROUND_TEXTURE_UNIT)
         gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.ground_tex)
-        gl.glUniform1i(self._loc(p, 'uGroundTex'), self.GROUND_TEXTURE_UNIT)
+        self._int(p, "uGroundTex", self.GROUND_TEXTURE_UNIT)
         self._float(p, 'uGroundTextureOn', float(self.ground_texture_enabled and bool(self.ground_tex)))
         gl.glActiveTexture(gl.GL_TEXTURE0)
 
@@ -1008,7 +1022,7 @@ class Renderer:
             except Exception as exc:
                 self.water_texture_error = str(exc)  # analytic detail remains usable
         gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.water_ripple_tex)
-        gl.glUniform1i(self._loc(p, 'uWaterRippleTex'), self.WATER_RIPPLE_UNIT)
+        self._int(p, "uWaterRippleTex", self.WATER_RIPPLE_UNIT)
         self._float(p, 'uWaterRippleOn', float(self.water_ripples_enabled and bool(self.water_ripple_tex)))
         gl.glActiveTexture(gl.GL_TEXTURE0)
 
@@ -1147,13 +1161,15 @@ class Renderer:
         return vao_p, [inst_vbo]
 
     def _prepare_lamps(self, lights, origin, scale):
+        """Prepare the unchanged instance stream; grounded sources retain arm choice."""
         lights = np.asarray(lights, np.float32)
         n = len(lights)
         lx, ly, lz = lights[:, 0], lights[:, 1], lights[:, 2]
         base = lights[:, 4] if lights.shape[1] >= 5 else np.zeros(n, np.float32)
         has_arm = lights.shape[1] >= 4
         ang = lights[:, 3] if has_arm else np.zeros(n, np.float32)
-        arm = (np.where(lz - base >= 8.5, _LAMP_ARM_LEN_TALL, _LAMP_ARM_LEN_SHORT).astype(np.float32)
+        source_height = lights[:, 5] if lights.shape[1] >= 6 else lz-base
+        arm = (np.where(source_height >= 8.5, _LAMP_ARM_LEN_TALL, _LAMP_ARM_LEN_SHORT).astype(np.float32)
                if has_arm else np.zeros(n, np.float32))
         sx, sy = float(scale[0]), float(scale[1])
         wx = lx * sx + float(origin[0]); wy = ly * sy + float(origin[1])
@@ -1260,6 +1276,26 @@ class Renderer:
         self._uniform_values[key] = value
         loc = self._loc(prog, name)
         if loc >= 0: self.gl.glUniform1f(loc, value)
+
+    # Sampler units, resolutions and texel steps are re-sent by every pass even though
+    # they only change on a resize or a new program.  Each PyOpenGL call costs tens of
+    # microseconds of dispatch, and at street level the frame is submit-bound, so these
+    # go through the same value cache as _float/_vec3 and cost a dict lookup once warm.
+    def _int(self, prog, name, v):
+        key = ("i", prog, name)
+        value = int(v)
+        if self._uniform_values.get(key) == value: return
+        self._uniform_values[key] = value
+        loc = self._loc(prog, name)
+        if loc >= 0: self.gl.glUniform1i(loc, value)
+
+    def _vec2(self, prog, name, v):
+        key = ("v2", prog, name)
+        value = (float(v[0]), float(v[1]))
+        if self._uniform_values.get(key) == value: return
+        self._uniform_values[key] = value
+        loc = self._loc(prog, name)
+        if loc >= 0: self.gl.glUniform2f(loc, value[0], value[1])
 
     def _stream_instances(self, vbo, rows):
         gl = self.gl
@@ -1456,7 +1492,7 @@ class Renderer:
         if not mask.any(): return
         rows = np.ascontiguousarray(a[mask])
         self._vec3(p, 'uOffset', (0, 0, 0))
-        self.gl.glUniform2f(self._loc(p, 'uScale'), 1, 1)
+        self._vec2(p, "uScale", (1, 1))
         self._float(p, 'uGrow', 1)
         if trees:
             distance = np.linalg.norm(pos[mask] - self._eye, axis=1)
@@ -1671,7 +1707,7 @@ class Renderer:
         gl = self.gl
         self._release_msaa_targets()
         for attr in ("scene_fbo", "bloom_fbo_a", "bloom_fbo_b", "ssr_fbo",
-                     "bloom_fbo_c", "bloom_fbo_d", "ae_meter_fbo", "ao_fbo"):
+                     "bloom_fbo_c", "bloom_fbo_d", "ae_meter_fbo", "ao_fbo", "haze_fbo", "haze_half_fbo"):
             fbo = getattr(self, attr, 0)
             if fbo:
                 gl.glDeleteFramebuffers(1, [fbo])
@@ -1688,7 +1724,8 @@ class Renderer:
             if fbo: gl.glDeleteFramebuffers(1, [fbo])
         self.star_fbo = []
         for attr in ("scene_tex", "bloom_tex_a", "bloom_tex_b", "mat_tex", "ssr_tex",
-                     "scene_depth_tex", "bloom_tex_c", "bloom_tex_d", "ae_meter_tex", "ao_tex"):
+                     "scene_depth_tex", "bloom_tex_c", "bloom_tex_d", "ae_meter_tex", "ao_tex",
+                     "haze_tex", "haze_half_tex"):
             tex = getattr(self, attr, 0)
             if tex:
                 gl.glDeleteTextures([tex])
@@ -1859,6 +1896,23 @@ class Renderer:
                                    gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER)
                                    == gl.GL_FRAMEBUFFER_COMPLETE)
 
+        # City haze output: the frame with the volumetric medium applied; bloom reads this.
+        self.haze_tex = tex(w, h)
+        self.haze_fbo = gl.glGenFramebuffers(1)
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.haze_fbo)
+        gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0,
+                                  gl.GL_TEXTURE_2D, self.haze_tex, 0)
+        ok_full = gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) == gl.GL_FRAMEBUFFER_COMPLETE
+        # The expensive ray-march runs at half resolution; the full-res apply pass upsamples it
+        # depth-aware (see HAZE_APPLY_FS).
+        self.haze_half_tex = tex(max(1, (w + 1) // 2), max(1, (h + 1) // 2))
+        self.haze_half_fbo = gl.glGenFramebuffers(1)
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.haze_half_fbo)
+        gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0,
+                                  gl.GL_TEXTURE_2D, self.haze_half_tex, 0)
+        self.haze_ok = bool(is_hdr and ok_full and gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER)
+                            == gl.GL_FRAMEBUFFER_COMPLETE)
+
         self.aw, self.ah = max(1, (w + 1) // 2), max(1, (h + 1) // 2)
         self.ao_tex = tex(self.aw, self.ah)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.ao_tex)
@@ -1992,7 +2046,7 @@ class Renderer:
         n = self._neon_n
         gl.glUniform3fv(self._loc(p, "uNeonPos[0]"), 48, self._neon_pos.ravel())
         gl.glUniform3fv(self._loc(p, "uNeonCol[0]"), 48, self._neon_col.ravel())
-        gl.glUniform1i(self._loc(p, "uNumNeon"), n)
+        self._int(p, "uNumNeon", n)
 
     def _draw_precip(self, cam, weather, sky, fog_near, fog_far, view, proj, eye):
         """World-space precipitation and roof-supported splashes into the bound target."""
@@ -2104,7 +2158,7 @@ class Renderer:
             gl.glUniform1i(self._loc(p, name), unit)
         self._mat(p, "uView", view); self._mat(p, "uProj", proj)
         self._mat(p, "uInvProj", np.linalg.inv(np.asarray(proj, np.float64)))
-        gl.glUniform2f(self._loc(p, "uResolution"), float(self.width), float(self.height))
+        self._vec2(p, "uResolution", (float(self.width), float(self.height)))
         self._float(p, "uRadius", max(0.1, self.ao_radius))
         self._float(p, "uReverseZ", float(self._reverse_active))
         gl.glBindVertexArray(self.vao_sky)
@@ -2131,7 +2185,7 @@ class Renderer:
         self._mat(p, "uView", view)
         self._mat(p, "uProj", proj)
         self._mat(p, "uInvProj", np.linalg.inv(np.asarray(proj, np.float64)))
-        gl.glUniform2f(self._loc(p, "uResolution"), float(self.width), float(self.height))
+        self._vec2(p, "uResolution", (float(self.width), float(self.height)))
         self._float(p, "uNear", near)
         self._float(p, "uReverseZ", float(self._reverse_active))
         self._float(p, "uMaxDist", self.ssr_max_dist)
@@ -2145,7 +2199,7 @@ class Renderer:
 
     # ------------------------------------------------------------ eye adaptation
     MOTION_BLUR_DEFAULT = 0.60
-    AE_DEFAULT_STRENGTH = 0.60
+    AE_DEFAULT_STRENGTH = 0.85      # follows the subject firmly: shade opens up, the sky behind it blows out
     AE_DEFAULT_BRIGHTNESS = 0.75
 
     def _ae_key(self):
@@ -2177,7 +2231,7 @@ class Renderer:
         gl.glViewport(0, 0, 128, 128)
         gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glBindTexture(gl.GL_TEXTURE_2D, src)
-        gl.glUniform1i(self._loc(p, "uScene"), 0)
+        self._int(p, "uScene", 0)
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.ae_meter_tex)
         gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
@@ -2189,10 +2243,10 @@ class Renderer:
         gl.glViewport(0, 0, 1, 1)
         gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.ae_meter_tex)
-        gl.glUniform1i(self._loc(p, "uMeter"), 0)
+        self._int(p, "uMeter", 0)
         gl.glActiveTexture(gl.GL_TEXTURE1)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.ae_tex[self._ae_cur])
-        gl.glUniform1i(self._loc(p, "uPrev"), 1)
+        self._int(p, "uPrev", 1)
         self._float(p, "uDt", dt)
         self._float(p, "uKey", self._ae_key())
         self._float(p, "uStrength", self.ae_strength)
@@ -2200,6 +2254,9 @@ class Renderer:
         self._float(p, "uMaxEV", self.ae_max_ev)
         self._float(p, "uSpeedBrighter", self.ae_speed_brighter)
         self._float(p, "uSpeedDarker", self.ae_speed_darker)
+        self._float(p, "uDead", self.ae_dead_band)
+        self._float(p, "uFastK", self.ae_fast_share)
+        self._float(p, "uFastRate", self.ae_fast_rate)
         self._float(p, "uReset", 1.0 if self._ae_reset else 0.0)
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6)
         self._ae_reset = False
@@ -2248,13 +2305,13 @@ class Renderer:
         gl.glViewport(0, 0, self.bw, self.bh)
         gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glBindTexture(gl.GL_TEXTURE_2D, src)
-        gl.glUniform1i(self._loc(p, "uScene"), 0)
+        self._int(p, "uScene", 0)
         gl.glActiveTexture(gl.GL_TEXTURE3)
         gl.glBindTexture(gl.GL_TEXTURE_2D, ae_tex)
-        gl.glUniform1i(self._loc(p, "uAE"), 3)
+        self._int(p, "uAE", 3)
         gl.glActiveTexture(gl.GL_TEXTURE0)
         # taps 2 px apart so the 4x downsample still averages a full 4x4 block
-        gl.glUniform2f(self._loc(p, "uTexel"), 2.0 / self.width, 2.0 / self.height)
+        self._vec2(p, "uTexel", (2.0 / self.width, 2.0 / self.height))
         thr = self.bloom_threshold * night_k + self.day_threshold * (1.0 - night_k)
         self._float(p, "uThreshold", thr)
         self._float(p, "uHdrIn", hdr)
@@ -2264,15 +2321,15 @@ class Renderer:
 
         p = self.prog_bloom_blur
         gl.glUseProgram(p)
-        gl.glUniform1i(self._loc(p, "uImage"), 0)
-        gl.glUniform2f(self._loc(p, "uTexel"), 1.0 / self.bw, 1.0 / self.bh)
+        self._int(p, "uImage", 0)
+        self._vec2(p, "uTexel", (1.0 / self.bw, 1.0 / self.bh))
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.bloom_fbo_b)       # horizontal: A -> B
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.bloom_tex_a)
-        gl.glUniform2f(self._loc(p, "uDir"), 1.0, 0.0)
+        self._vec2(p, "uDir", (1.0, 0.0))
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6)
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.bloom_fbo_a)       # vertical: B -> A
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.bloom_tex_b)
-        gl.glUniform2f(self._loc(p, "uDir"), 0.0, 1.0)
+        self._vec2(p, "uDir", (0.0, 1.0))
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6)
 
         # ---- wide glow: A -> 1/16 res, two blur pairs
@@ -2284,21 +2341,21 @@ class Renderer:
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.bloom_fbo_c)
             gl.glViewport(0, 0, self.cw, self.ch)
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.bloom_tex_a)
-            gl.glUniform1i(self._loc(p, "uImage"), 0)
-            gl.glUniform2f(self._loc(p, "uTexel"), 1.0 / self.bw, 1.0 / self.bh)
+            self._int(p, "uImage", 0)
+            self._vec2(p, "uTexel", (1.0 / self.bw, 1.0 / self.bh))
             gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6)
             p = self.prog_bloom_blur
             gl.glUseProgram(p)
-            gl.glUniform1i(self._loc(p, "uImage"), 0)
-            gl.glUniform2f(self._loc(p, "uTexel"), 1.0 / self.cw, 1.0 / self.ch)
+            self._int(p, "uImage", 0)
+            self._vec2(p, "uTexel", (1.0 / self.cw, 1.0 / self.ch))
             for _ in range(2):
                 gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.bloom_fbo_d)   # C -> D
                 gl.glBindTexture(gl.GL_TEXTURE_2D, self.bloom_tex_c)
-                gl.glUniform2f(self._loc(p, "uDir"), 1.0, 0.0)
+                self._vec2(p, "uDir", (1.0, 0.0))
                 gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6)
                 gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.bloom_fbo_c)   # D -> C
                 gl.glBindTexture(gl.GL_TEXTURE_2D, self.bloom_tex_d)
-                gl.glUniform2f(self._loc(p, "uDir"), 0.0, 1.0)
+                self._vec2(p, "uDir", (0.0, 1.0))
                 gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6)
 
         # ---- screen-space lens flare: starburst + ghosts from the highlight textures -> B
@@ -2309,15 +2366,15 @@ class Renderer:
             gl.glViewport(0, 0, self.bw, self.bh)
             gl.glActiveTexture(gl.GL_TEXTURE0)
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.bloom_tex_a)
-            gl.glUniform1i(self._loc(p, "uNear"), 0)
+            self._int(p, "uNear", 0)
             gl.glActiveTexture(gl.GL_TEXTURE1)
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.bloom_tex_c)
-            gl.glUniform1i(self._loc(p, "uFar"), 1)
+            self._int(p, "uFar", 1)
             gl.glActiveTexture(gl.GL_TEXTURE0)
             self._float(p, "uAspect", self.width / max(1.0, float(self.height)))
             self._float(p, "uThr", self.flare_threshold)
             self._float(p, "uFStop", self.flare_fstop)
-            gl.glUniform1i(self._loc(p, "uBlades"), int(self.flare_blades))
+            self._int(p, "uBlades", int(self.flare_blades))
             night_f = 1.0 - 0.75 * night_k          # higher night exposure needs quieter lamp flares
             self._float(p, "uStarGain", 0.0)
             self._float(p, "uGhostGain", self.flare_ghost_gain * self.flare_gain * night_f)
@@ -2334,12 +2391,12 @@ class Renderer:
                 gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.star_fbo[0])
                 gl.glActiveTexture(gl.GL_TEXTURE0)
                 gl.glBindTexture(gl.GL_TEXTURE_2D, src)
-                gl.glUniform1i(self._loc(p, "uScene"), 0)
+                self._int(p, "uScene", 0)
                 gl.glActiveTexture(gl.GL_TEXTURE3)
                 gl.glBindTexture(gl.GL_TEXTURE_2D, ae_tex)
-                gl.glUniform1i(self._loc(p, "uAE"), 3)
+                self._int(p, "uAE", 3)
                 gl.glActiveTexture(gl.GL_TEXTURE0)
-                gl.glUniform2f(self._loc(p, "uTexel"), 1.0 / self.width, 1.0 / self.height)
+                self._vec2(p, "uTexel", (1.0 / self.width, 1.0 / self.height))
                 self._float(p, "uThr", self.flare_star_threshold)
                 self._float(p, "uClamp", self.flare_star_clamp)
                 self._float(p, "uHdrIn", hdr)
@@ -2349,7 +2406,7 @@ class Renderer:
 
                 p = self.prog_star_streak
                 gl.glUseProgram(p)
-                gl.glUniform1i(self._loc(p, "uImage"), 0)
+                self._int(p, "uImage", 0)
                 fn = float(np.clip((self.flare_fstop - 8.0) / 14.0, 0.0, 1.0))
                 fn *= 1.0 - 0.75 * night_k         # keep night starbursts compact around each fixture
                 decay = 0.945 + 0.025 * (fn - 0.43) / 0.57          # f/22 reaches further than f/14
@@ -2363,7 +2420,7 @@ class Renderer:
                         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fout)
                         gl.glBindTexture(gl.GL_TEXTURE_2D, tin)
                         scale = 4.0 ** k
-                        gl.glUniform2f(self._loc(p, "uStep"), dx * scale, dy * scale)
+                        self._vec2(p, "uStep", (dx * scale, dy * scale))
                         self._float(p, "uDecay", decay ** scale)
                         last = (k == 3)
                         self._float(p, "uGain", star_gain / n_ax if last else 1.0)
@@ -2388,7 +2445,7 @@ class Renderer:
             gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
             gl.glUniform1i(self._loc(p, name), unit)
         sun_uv, sun_glare = self._sun_glare_params()
-        gl.glUniform2f(self._loc(p, "uSunUV"), sun_uv[0], sun_uv[1])
+        self._vec2(p, "uSunUV", (sun_uv[0], sun_uv[1]))
         self._float(p, "uSunGlare", sun_glare if hdr > 0.5 else 0.0)
         self._vec3(p, "uSunTint", self.sun_glare_tint)
         self._float(p, "uReverseZ", float(self._reverse_active))
@@ -2401,14 +2458,17 @@ class Renderer:
         self._float(p, "uFlareTexOn", 1.0 if flare_on else 0.0)
         self._float(p, "uFlareMaxBrightness", self.flare_max_brightness)
         self._float(p, "uStreak", self.streak_gain if (hdr > 0.5 and look == 2) else 0.0)
-        gl.glUniform2f(self._loc(p, "uResolution"), float(self.width), float(self.height))
+        self._vec2(p, "uResolution", (float(self.width), float(self.height)))
         self._float(p, "uNight", night_k)
         self._float(p, "uTime", self._tshader())
         self._float(p, "uGrade", self.grade_strength if look else 0.0)
-        gl.glUniform1i(self._loc(p, "uLook"), look)
+        self._int(p, "uLook", look)
         self._float(p, "uHdrIn", hdr)
         self._float(p, "uEVComp", self.ev_comp)
         self._float(p, "uAEOn", 1.0 if ae_on else 0.0)
+        self._float(p, "uContrast", self.contrast if self.grade_enabled else 1.0)
+        # Contrast rotates around the exposure the eye adaptation is aiming for (mid-grey if it is off).
+        self._float(p, "uPivot", self._ae_key() if ae_on else 0.18)
         # camera motion blur: reproject this frame's depth into the previous frame
         vp = self._cur_vp if self._cur_vp is not None else self._last_vp
         prev = self._prev_vp
@@ -2438,6 +2498,135 @@ class Renderer:
         gl.glBindVertexArray(0)
         gl.glEnable(gl.GL_DEPTH_TEST)
         gl.glDepthMask(gl.GL_TRUE)
+
+    def _haze_floor(self, cam, eye):
+        """World z of the street the haze layer rests on (smoothed so terrain steps do not pop)."""
+        if self.city_haze_floor is not None:
+            return float(self.city_haze_floor)
+        try:
+            z = float(cam.target[2])
+        except Exception:
+            z = 0.0
+        z = min(z, float(eye[2]) - 0.5)
+        prev = self._haze_floor_s
+        self._haze_floor_s = z if (prev is None or abs(z - prev) > 60.0) else prev + (z - prev) * 0.05
+        return self._haze_floor_s
+
+    def _haze_lamps(self, eye, night):
+        """Nearest street lamps to the camera, for the haze halos.  The selection is cached and
+        only redone when the lamp set changes or the camera has moved ~8 m."""
+        pos = np.zeros((HAZE_MAX_LAMPS, 3), np.float32)
+        col = np.zeros((HAZE_MAX_LAMPS, 3), np.float32)
+        lamps = getattr(self.lights, "_lamps", None)
+        if night <= 0.05 or lamps is None or len(lamps) == 0:
+            return pos, col, 0
+        key = (id(lamps), len(lamps), round(float(eye[0]) / 8.0), round(float(eye[1]) / 8.0))
+        if key != getattr(self, "_haze_lamp_key", None):
+            d2 = (lamps[:, 0] - eye[0]) ** 2 + (lamps[:, 1] - eye[1]) ** 2
+            k = min(HAZE_MAX_LAMPS, len(lamps))
+            idx = np.argpartition(d2, k - 1)[:k] if len(lamps) > k else np.arange(len(lamps))
+            n = len(idx)
+            # normalise colour to luminance 1: the halo is warm sodium/LED white, not an emitter value
+            c = np.maximum(lamps[idx, 4:7], 0.0)
+            c = c / np.maximum(c @ np.array([.2126, .7152, .0722], np.float32), 1e-3)[:, None]
+            self._haze_lamp_key = key
+            self._haze_lamp_cache = (lamps[idx, 0:3].astype(np.float32), c.astype(np.float32), n)
+        p, c, n = self._haze_lamp_cache
+        pos[:n], col[:n] = p, c
+        return pos, col, n
+
+    def _haze_pass(self, src, cam, sky, weather, eye, night):
+        """Ray-march the city haze through the finished HDR frame; returns the texture to bloom."""
+        if (not self.city_haze_enabled or not self.haze_ok or not self.hdr_scene
+                or self._hdr_out < 0.5 or self._cur_vp is None
+                or not getattr(self, "haze_fbo", 0)):
+            return src
+        gl = self.gl
+        cfg = self.city_haze
+        ae_on = bool(self.ae_enabled and self.ae_ok and self.ae_tex)
+        ae_tex = self.ae_tex[self._ae_cur] if ae_on else src
+        night = float(np.clip(night, 0.0, 1.0))
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.haze_half_fbo)
+        gl.glViewport(0, 0, max(1, (self.width + 1) // 2), max(1, (self.height + 1) // 2))
+        gl.glDisable(gl.GL_DEPTH_TEST); gl.glDepthMask(gl.GL_FALSE)
+        gl.glDisable(gl.GL_BLEND); gl.glDisable(gl.GL_CULL_FACE)
+        p = self.prog_haze
+        gl.glUseProgram(p)
+        for unit, tex, name in ((0, src, "uScene"), (1, self.scene_depth_tex, "uDepth"), (2, ae_tex, "uAE")):
+            gl.glActiveTexture(gl.GL_TEXTURE0 + unit)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
+            gl.glUniform1i(self._loc(p, name), unit)
+        self._mat(p, "uInvViewProj", np.linalg.inv(np.asarray(self._cur_vp, np.float64)))
+        self._vec3(p, "uCamPos", eye)
+        self._float(p, "uReverseZ", float(self._reverse_active))
+        self._float(p, "uAEOn", 1.0 if ae_on else 0.0)
+        self._float(p, "uEVComp", self.ev_comp)
+        self._float(p, "uTime", self._tshader())
+        wind = (wind_displacement(weather) if weather is not None else (0.0, 0.0))
+        self._vec2(p, "uWindOffset", (float(wind[0]), float(wind[1])))
+        self._float(p, "uExposure", sky.exposure)
+        self._float(p, "uNight", night)
+        self._vec3(p, "uSunDir", sky.light_dir)
+        self._vec3(p, "uSunColor", sky.light)
+        self._vec3(p, "uAmbColor", sky.amb)
+        # Rain, storm, snow and overcast thicken the air (weather.fog is ~0.06 in clear weather).
+        wfog = float(getattr(weather, "fog", 0.0)) if weather is not None else 0.0
+        self._float(p, "uWeather", 1.0 + 1.2 * float(np.clip(wfog - 0.06, 0.0, 1.0)))
+        # By day the weather system's own fog already carries rain and storms: keep only a share.
+        self._float(p, "uDensityScale", cfg["DayDensity"] * (1.0 - night) + night)
+        self._float(p, "uHazeFloor", self._haze_floor(cam, eye))
+        for key in ("Density", "Height", "Noise", "NoiseScale", "Aniso", "Ground", "MaxDist",
+                    "Glow", "Neon", "Beam", "Lamp"):
+            self._float(p, "uHaze" + key, cfg[key])
+        self._float(p, "uHazeAmbient", cfg["AmbientDay"] * (1.0 - night) + cfg["AmbientNight"] * night)
+        self._int(p, "uHazeSteps", int(cfg["Steps"]))
+        self._vec3(p, "uHazeGlowTint", HAZE_GLOW_TINT)
+        # Light tables the surfaces already use: nearest neon emitters and vehicle headlights.
+        gl.glUniform3fv(self._loc(p, "uNeonPos[0]"), 48, self._neon_pos.ravel())
+        gl.glUniform3fv(self._loc(p, "uNeonCol[0]"), 48, self._neon_col.ravel())
+        self._int(p, "uNumNeon", int(self._neon_n))
+        lamp_pos, lamp_col, n_lamps = self._haze_lamps(eye, night)
+        gl.glUniform3fv(self._loc(p, "uLampPos[0]"), HAZE_MAX_LAMPS, lamp_pos.ravel())
+        gl.glUniform3fv(self._loc(p, "uLampCol[0]"), HAZE_MAX_LAMPS, lamp_col.ravel())
+        self._int(p, "uNumLamps", int(n_lamps))
+        heads = getattr(self.lights, "head_beams", None)
+        n_beams = 0
+        if heads is not None and night > 0.05:
+            n_beams = min(len(heads), HEADLIGHT_BEAMS)
+        beam_pos = np.zeros((HEADLIGHT_BEAMS, 4), np.float32)
+        beam_dir = np.zeros((HEADLIGHT_BEAMS, 4), np.float32)
+        if n_beams:
+            beam_pos[:n_beams, :3] = heads[:n_beams, :3]
+            beam_dir[:n_beams, :3] = heads[:n_beams, 3:6]
+            beam_dir[:n_beams, 3] = heads[:n_beams, 6]
+        gl.glUniform4fv(self._loc(p, "uBeamPos[0]"), HEADLIGHT_BEAMS, beam_pos.ravel())
+        gl.glUniform4fv(self._loc(p, "uBeamDir[0]"), HEADLIGHT_BEAMS, beam_dir.ravel())
+        self._int(p, "uBeamCount", int(n_beams))
+        gl.glBindVertexArray(self.vao_sky)
+        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6)
+
+        # Full-resolution finish: depth-aware upsample + emitter exemption.
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.haze_fbo)
+        gl.glViewport(0, 0, self.width, self.height)
+        q = self.prog_haze_apply
+        gl.glUseProgram(q)
+        for unit, tex, name in ((0, src, "uScene"), (1, self.scene_depth_tex, "uDepth"),
+                                (2, ae_tex, "uAE"), (3, self.haze_half_tex, "uHalf")):
+            gl.glActiveTexture(gl.GL_TEXTURE0 + unit)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
+            gl.glUniform1i(self._loc(q, name), unit)
+        self._float(q, "uReverseZ", float(self._reverse_active))
+        self._float(q, "uAEOn", 1.0 if ae_on else 0.0)
+        self._float(q, "uEVComp", self.ev_comp)
+        self._float(q, "uHazeEmitter", cfg["Emitter"])
+        gl.glUniform2f(self._loc(q, "uProjZ"), *self._cur_proj_z)
+        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6)
+        gl.glBindVertexArray(0)
+        for unit in (3, 2, 1):
+            gl.glActiveTexture(gl.GL_TEXTURE0 + unit)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        gl.glActiveTexture(gl.GL_TEXTURE0)
+        return self.haze_tex
 
     def _sun_glare_params(self):
         """Sun position in the frame (uv) and glare strength for the post composite.
@@ -2508,7 +2697,7 @@ class Renderer:
         self._mat3(p, 'uInvViewRotation', view[:3, :3].T)
         self._vec3(p, "uCamPos", cam.position)
         self._vec3(p, "uSunDir", sky.sun_dir)
-        gl.glUniform1i(self._loc(p, "uSkyLUT"), self.SKY_LUT_UNIT)
+        self._int(p, "uSkyLUT", self.SKY_LUT_UNIT)
         self._float(p, "uSkyLutOn", float(getattr(self, "sky_lut_ok", False)))
         self._vec3(p, "uFogColor", sky.fog)
         self._float(p, "uSunIntensity", sky.atmosphere_intensity)
@@ -2843,7 +3032,7 @@ class Renderer:
         for c in casters:
             if c.b_count == 0: continue
             self._vec3(p, "uOffset", c.offset)
-            gl.glUniform2f(self._loc(p, "uScale"), float(c.scale[0]), float(c.scale[1]))
+            self._vec2(p, "uScale", (float(c.scale[0]), float(c.scale[1])))
             self._float(p, "uGrow", self._grow(c, now))
             gl.glBindVertexArray(c.vao_b)
             self._draw_tris(c, "b", planes)
@@ -2851,7 +3040,7 @@ class Renderer:
         for c in casters:
             if c.g_count == 0: continue
             self._vec3(p, "uOffset", c.offset)
-            gl.glUniform2f(self._loc(p, "uScale"), float(c.scale[0]), float(c.scale[1]))
+            self._vec2(p, "uScale", (float(c.scale[0]), float(c.scale[1])))
             self._float(p, "uGrow", 1.)
             gl.glBindVertexArray(c.vao_g)
             self._draw_tris(c, "g", planes)
@@ -2901,7 +3090,7 @@ class Renderer:
         gl.glUseProgram(p)
         self._mat(p, 'uLightSpaceMatrix', light.matrix)
         self._vec3(p, 'uOffset', (0., 0., 0.))
-        gl.glUniform2f(self._loc(p, 'uScale'), 1., 1.)
+        self._vec2(p, "uScale", (1., 1.))
         for k, count in enumerate(self.vehicle_shadow_counts[:self.signal_kind]):
             if not count: continue
             template = k % self.vehicle_kinds + 2*self.vehicle_kinds
@@ -2945,21 +3134,20 @@ class Renderer:
         origin = getattr(self, '_eye', np.zeros(3))
         self._vec3(p, 'uCloudOrigin', (float(origin[0]), float(origin[1]), self.sky.observer_height))
         if w is not None:
-            gl.glUniform2f(self._loc(p, "uWind"),
-                            float(w.wind[0]), float(w.wind[1]))
+            self._vec2(p, "uWind", (float(w.wind[0]), float(w.wind[1])))
             gl.glUniform2f(self._loc(p, 'uWindOffset'), *map(float, wind_displacement(w)))
         else:
-            gl.glUniform2f(self._loc(p, "uWind"), 0.0, 0.0)
-            gl.glUniform2f(self._loc(p, 'uWindOffset'), 0., 0.)
+            self._vec2(p, "uWind", (0.0, 0.0))
+            self._vec2(p, "uWindOffset", (0., 0.))
         roof = self.rain_roof
         active = self._rain_roof_active and roof is not None and roof.complete
         self._float(p, 'uRainRoofOn', float(active))
-        gl.glUniform1i(self._loc(p, 'uRainRoof'), RainOcclusionMap.UNIT)
+        self._int(p, "uRainRoof", RainOcclusionMap.UNIT)
         if active:
             self._mat(p, 'uRainViewProj', roof.matrix)
             self._mat(p, 'uRainInvViewProj', roof.inv_matrix)
             self._float(p, 'uRainRoofBias', roof.bias)
-            gl.glUniform2f(self._loc(p, 'uRainRoofTexel'), 1. / roof.size, 1. / roof.size)
+            self._vec2(p, "uRainRoofTexel", (1. / roof.size, 1. / roof.size))
 
     @property
     def weather_memory_bytes(self):
@@ -3056,7 +3244,7 @@ class Renderer:
     def _shadow_uniforms(self, p, light, sky):
         strength = sky.strength if (self.shadow is not None and light is not None) else 0.0
         if light is not None: self._mat(p, "uLightSpaceMatrix", light.matrix)
-        self.gl.glUniform1i(self._loc(p, "uShadowMap"), 1)
+        self._int(p, "uShadowMap", 1)
         self._float(p, "uShadowTexel", 1.0 / self.shadow.size if self.shadow else 1.0)
         self._float(p, "uShadowTexelWorld", light.texel if light else 1.0)
         self._float(p, "uShadowBias", self._shadow_depth_bias(light, self.shadow_bias))
@@ -3064,7 +3252,7 @@ class Renderer:
         near = getattr(self, '_near_light', None)
         near_map = getattr(self, 'near_shadow', None)
         if near is not None: self._mat(p, 'uNearLightSpaceMatrix', near.matrix)
-        self.gl.glUniform1i(self._loc(p, 'uNearShadowMap'), self.NEAR_SHADOW_UNIT)
+        self._int(p, "uNearShadowMap", self.NEAR_SHADOW_UNIT)
         self._float(p, 'uNearShadowTexel', 1. / near_map.size if near_map else 1.)
         self._float(p, 'uNearShadowBias', self._shadow_depth_bias(near, self.shadow_bias))
         self._float(p, 'uNearShadowStrength', sky.strength if near_map is not None and near is not None else 0.)
@@ -3072,7 +3260,7 @@ class Renderer:
         vehicle_map = getattr(self, 'vehicle_shadow', None)
         active = bool(getattr(self, '_vehicle_shadow_active', False))
         if vehicle is not None: self._mat(p, 'uVehicleLightSpaceMatrix', vehicle.matrix)
-        self.gl.glUniform1i(self._loc(p, 'uVehicleShadowMap'), self.VEHICLE_SHADOW_UNIT)
+        self._int(p, "uVehicleShadowMap", self.VEHICLE_SHADOW_UNIT)
         self._float(p, 'uVehicleShadowTexel', 1. / vehicle_map.size if vehicle_map else 1.)
         self._float(p, 'uVehicleShadowTexelWorld', vehicle.texel if vehicle else 1.)
         self._float(p, 'uVehicleShadowBias', self._shadow_depth_bias(vehicle, .025))
@@ -3158,6 +3346,7 @@ class Renderer:
             depth_q = 0.0
         # The depth buffer and the post pass must share the exact projection used below.
         self._cur_vp = np.asarray(proj, np.float64) @ np.asarray(view, np.float64)
+        self._cur_proj_z = (float(proj[2][2]), float(proj[2][3]))
         self._vp_eye = np.asarray(eye, np.float64).copy()
         self._vp_time = time.time()
         self._cur_car = self.motion_car
@@ -3241,7 +3430,7 @@ class Renderer:
             self._float(p, "uHdrOut", self._hdr_out)
             self._float(p, "uDepthQ", depth_q)
             self._float(p, "uReverseZ", float(self._reverse_active))
-            gl.glUniform1i(self._loc(p, "uSkyLUT"), self.SKY_LUT_UNIT)
+            self._int(p, "uSkyLUT", self.SKY_LUT_UNIT)
             self._float(p, "uSkyLutOn", 1.0 if getattr(self, "sky_lut_ok", False) else 0.0)
             self._vec3(p, "uSkySunDir", sky.sun_dir)
             self._atmosphere_uniforms(p, sky)
@@ -3284,7 +3473,7 @@ class Renderer:
         for c in vis:
             if c.g_count == 0: continue
             self._vec3(p, "uOffset", c.offset)
-            gl.glUniform2f(self._loc(p, "uScale"), float(c.scale[0]), float(c.scale[1]))
+            self._vec2(p, "uScale", (float(c.scale[0]), float(c.scale[1])))
             self._float(p, "uGrow", 1.0)
             gl.glBindVertexArray(c.vao_g)
             self._draw_tris(c, "g", planes)
@@ -3304,7 +3493,7 @@ class Renderer:
         for c in vis:
             if c.b_count == 0: continue
             self._vec3(p, "uOffset", c.offset)
-            gl.glUniform2f(self._loc(p, "uScale"), float(c.scale[0]), float(c.scale[1]))
+            self._vec2(p, "uScale", (float(c.scale[0]), float(c.scale[1])))
             self._float(p, "uGrow", self._grow(c, now))
             # Apply fog-aware scaling to LOD distance
             lod_dist = self.building_lod_distance * getattr(self, '_fog_lod_scale', 1.0)
@@ -3326,7 +3515,7 @@ class Renderer:
             for c in vis:
                 if c.p_count == 0 or self._chunk_dist(c, eye) > props_dist: continue
                 self._vec3(p, "uOffset", c.offset)
-                gl.glUniform2f(self._loc(p, "uScale"), float(c.scale[0]), float(c.scale[1]))
+                self._vec2(p, "uScale", (float(c.scale[0]), float(c.scale[1])))
                 self._float(p, "uGrow", 1.0)
                 gl.glBindVertexArray(c.vao_prop)
                 self._draw_tris(c, "prop", planes, props_dist)
@@ -3388,20 +3577,20 @@ class Renderer:
             self._mat(p, 'uInvViewProj', np.linalg.inv(proj.astype(np.float64) @ view.astype(np.float64)))
         gl.glActiveTexture(gl.GL_TEXTURE0 + 3)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.ssr_tex if use_post else 0)
-        gl.glUniform1i(self._loc(p, 'uRefractionMap'), 3)
+        self._int(p, "uRefractionMap", 3)
         
         gl.glActiveTexture(gl.GL_TEXTURE0 + 2)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.depth_tex)
-        gl.glUniform1i(self._loc(p, "uDepthMap"), 2)
+        self._int(p, "uDepthMap", 2)
         
-        gl.glUniform2f(self._loc(p, "uResolution"), float(self.width), float(self.height))
+        self._vec2(p, "uResolution", (float(self.width), float(self.height)))
         self._float(p, "uNear", near)
         self._float(p, "uFar", far)
 
         for c in vis:
             if c.w_count == 0: continue
             self._vec3(p, "uOffset", c.offset)
-            gl.glUniform2f(self._loc(p, "uScale"), float(c.scale[0]), float(c.scale[1]))
+            self._vec2(p, "uScale", (float(c.scale[0]), float(c.scale[1])))
             gl.glBindVertexArray(c.vao_w)
             self._draw_tris(c, 'w', planes)
 
@@ -3419,7 +3608,7 @@ class Renderer:
                 self._ensure_edges(c)
                 if not c.vao_e: continue
                 self._vec3(p, "uOffset", c.offset)
-                gl.glUniform2f(self._loc(p, "uScale"), float(c.scale[0]), float(c.scale[1]))
+                self._vec2(p, "uScale", (float(c.scale[0]), float(c.scale[1])))
                 self._float(p, "uGrow", self._grow(c, now))
                 gl.glBindVertexArray(c.vao_e)
                 gl.glDrawArrays(gl.GL_LINES, 0, c.e_count)
@@ -3480,7 +3669,7 @@ class Renderer:
         gl.glDisable(gl.GL_CULL_FACE)
         
         self._vec3(p, "uOffset", (0, 0, 0))
-        gl.glUniform2f(self._loc(p, "uScale"), 1, 1)
+        self._vec2(p, "uScale", (1, 1))
         for k, count in enumerate(self.moving_counts):
             if not count: continue
             gl.glBindVertexArray(self.moving_vaos[k])
@@ -3554,7 +3743,7 @@ class Renderer:
             for c in vis:
                 if c.s_count == 0 or self._chunk_dist(c, eye) > neon_dist: continue
                 self._vec3(p, "uOffset", c.offset)
-                gl.glUniform2f(self._loc(p, "uScale"), float(c.scale[0]), float(c.scale[1]))
+                self._vec2(p, "uScale", (float(c.scale[0]), float(c.scale[1])))
                 self._float(p, "uGrow", self._grow(c, now))
                 gl.glBindVertexArray(c.vao_s)
                 self._draw_tris(c, "s", planes, neon_dist)
@@ -3584,7 +3773,7 @@ class Renderer:
             gl.glUseProgram(gp)
             common(gp)
             self._vec3(gp, "uOffset", (0, 0, 0))
-            gl.glUniform2f(self._loc(gp, "uScale"), 1, 1)
+            self._vec2(gp, "uScale", (1, 1))
             gl.glEnable(gl.GL_DEPTH_TEST)
             gl.glDepthMask(gl.GL_TRUE)
             gl.glDisable(gl.GL_BLEND)
@@ -3615,6 +3804,9 @@ class Renderer:
                                                         view, proj, eye)
             if self._hdr_out > 0.5 and self.ae_enabled and self.ae_ok:
                 self._auto_exposure(src)
+            # Volumetric haze runs after metering (the eye adapts to the scene, not to the mist
+            # in front of it) and before bloom, so fog-lit neon glow still blooms.
+            src = self._haze_pass(src, cam, sky, weather, eye, night)
             self._composite_bloom(src)
         else:
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)

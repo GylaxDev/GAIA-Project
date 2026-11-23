@@ -4,13 +4,16 @@ from __future__ import annotations
 from . import icons
 from . import theme as T
 from .menu_ui import Page, frame_rect
-from .ui_kit import (button, close_button, group, heading, inside, logo_mark, paragraph, separator, sheet)
+from . import ui_kit
+from .loading_ui import APP_NAME, TAGLINE
+from .ui_kit import (caps, button, close_button, group, heading, inside, logo_mark, paragraph, separator, sheet)
 
 CREDITS = (
     ("Map data", "© OpenStreetMap contributors", "Buildings, roads and places, ODbL"),
     ("Terrain", "AWS Open Data elevation tiles", "Terrarium-encoded DEM, no key needed"),
     ("Stars", "HYG v4.1 star catalogue", "David Nash / Astronomy Nexus, CC BY-SA 4.0"),
     ("Typeface", "Inter", "The Inter Project Authors, SIL Open Font License 1.1"),
+    ("Engine sound", "Recorded V8 loops", "Baked from user-supplied recordings"),
 )
 
 
@@ -35,12 +38,14 @@ class AboutPage(Page):
         # Identity block
         pad = 32
         logo_mark(ui, fx + pad, fy + 28, 60.0)
-        ui.text("OSM 3D", fx + pad + 78, fy + 30, T.T_DISPLAY - 2, T.TEXT_PRIMARY, weight="bold")
-        ui.text(f"Version {getattr(host, 'version', '1.0.0')}", fx + pad + 79, fy + 64, T.T_BODY, T.TEXT_TERTIARY,
-                weight="medium")
+        size = T.T_DISPLAY - 6
+        pw_ = caps(ui, "Project", fx + pad + 78, fy + 32, size, T.TEXT_PRIMARY, "bold", track=0.16)
+        caps(ui, "GAIA", fx + pad + 78 + pw_ + size * 0.5, fy + 32, size, T.WD_GREEN, "bold", track=0.16)
+        ui.text(f"// {TAGLINE}  ·  Version {getattr(host, 'version', '1.0.0')}", fx + pad + 79, fy + 68, T.T_BODY - 1,
+                T.TEXT_TERTIARY)
 
         body_w = fw - 2 * pad
-        paragraph(ui, "Explore real cities in 3D. Buildings, streets and terrain stream in from OpenStreetMap "
+        paragraph(ui, "Project GAIA lets you explore real places in 3D. Buildings, streets and terrain stream in from OpenStreetMap "
                       "while traffic, pedestrians, weather and a physically based sky bring them to life. "
                       "Fly over, walk the pavements, or take any car for a drive.",
                   fx + pad, fy + 108, min(body_w, 640), T.T_CALLOUT, T.TEXT_SECONDARY, lead=22)

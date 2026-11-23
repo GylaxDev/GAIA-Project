@@ -3,6 +3,7 @@ from .streetspill import STREET_SPILL
 from .neon import NEON_SPILL
 from .env import ENV_SKY
 from .hdr import HDR_CONV, HDR_OUT
+from .street_furniture import STREET_FURNITURE
 from .sun import SUN_LIGHT
 from .interiors import INTERIORS
 from .storefront import STOREFRONT
@@ -184,7 +185,7 @@ vec4 roomHash(vec2 id, float seed) {
                 h11(dot(id, vec2(93.1, 17.9)) + seed * 3.3),
                 h11(dot(id, vec2(51.7, 63.4)) + seed * 19.9));
 }
-""" + INTERIORS + STOREFRONT + """
+""" + INTERIORS + STOREFRONT + STREET_FURNITURE + """
 void main() {
     vec3 N = normalize(vNormal);
     vec3 V = normalize(uCamPos - vWorld);
@@ -206,12 +207,16 @@ void main() {
     float u      = vUV.x;
     float L_wall = vUV.y;
     vec2 facadeFootprint = max(fwidth(vec2(u, localZ)), vec2(0.001));
+    vec2 propFootprint = max(fwidth(vUV), vec2(.001));
 
     vec3  albedo = vColor;
     float rough  = 0.8;
     float metal  = 0.0;
     float emisS  = 0.0;
     vec3  emisC  = vec3(0.0);
+    // 1 = near facade, falls toward the dim unresolved level once a window bay is only a
+    // few pixels across or the facade has receded into the skyline.
+    float windowLod = 1.0;
     float glassMask = 0.0;
     float glassF0   = 0.04;   // uncoated glass, IOR ~1.5; coated facades use 0.08 below
     float glassRough = 0.06;  // pane roughness, independent of distance-averaged opaque frames
@@ -336,6 +341,17 @@ void main() {
             float dist = length(uCamPos - vWorld);
             float detail = 1.0 - smoothstep(0.025, 0.14, max(facadeFootprint.x, facadeFootprint.y));
             float far = smoothstep(0.4, 1.2, max(pixel.x, pixel.y));
+            // Distant lit panes are small, and once a bay approaches subpixel size the
+            // suite-wide lighting is no longer resolved: full room radiance then spreads
+            // over whole pixels and, after bloom, reads as big glowing slabs.  Settle the
+            // skyline toward the subdued unresolved level instead of keeping every pane at
+            // close-range brightness.  Near facades keep their full interior detail.
+            // ~12 px per bay is still crisp; below ~3 px the pane is no longer resolved.
+            // The unresolved level already carries the room's furniture/curtain occlusion
+            // (furnishedRoom far average), so this only trims the remaining excess.
+            float subpixel = smoothstep(0.08, 0.30, max(pixel.x, pixel.y));
+            float receded  = smoothstep(120.0, 650.0, dist);
+            windowLod = mix(1.0, 0.55, max(subpixel, receded));
 
             vec4 windowRect = vec4(.035, .965, .20, .98);
             if (theme < 0.5) {
@@ -608,6 +624,8 @@ void main() {
             rough=.94;
         } else if (abs(theme-2.0)<.01) {
             rough=.72;  // unlettered, powder-coated fascia
+        } else if (theme > 2.5) {
+            streetPropSurface(theme, seed, vUV, propFootprint, N, albedo, rough, metal);
         }
     } else if (vPartKind > 10.5) {
         // ================= ROAD PAINT =================
@@ -629,7 +647,8 @@ void main() {
     // The architectural palettes are display RGB, not linear reflectance.
     albedo = linearColor(albedo);
     vec2 albRange = PAINT_REFLECTANCE;
-    if (N.z > 0.55 || (vPartKind > 0.5 && vPartKind < 1.5)) albRange = ROOF_REFLECTANCE;
+    bool streetProp = vPartKind > 6.5 && vPartKind < 8.5 && theme > 2.5;
+    if ((!streetProp && N.z > 0.55) || (vPartKind > 0.5 && vPartKind < 1.5)) albRange = ROOF_REFLECTANCE;
     // Wall/frame coverage is already mixed: clamping it to the masonry minimum
     // would turn dark frames and spandrels into pale coloured borders.
     albedo = mix(reflectanceRange(albedo, albRange), albedo, glassMask);
@@ -711,10 +730,12 @@ void main() {
     float glassThrough = 1.0 - glassF0 - (1.0 - glassF0) * pow(1.0 - NdotV, 5.0);
     vec3 transmitted = interiorRad * glassTransmission * glassThrough;
     vec3 emissive = mix(emissionNits(emisC, WINDOW_NITS) * emisS, transmitted, interiorW);
-    // Unresolved coverage uses the same subdued night fallback as before.
+    // Unresolved coverage uses the same subdued night fallback as before.  Both the
+    // fallback and the resolved room fade with the window LOD above, so a distant
+    // occupied suite stays a small lamp rather than a wall-sized white panel.
     if (vPartKind < .5) emissive = mix(emissionNits(emisC, WINDOW_NITS) * emisS
                                      * mix(1.0, .23, uNightFactor),
-                                      transmitted, interiorW);
+                                      transmitted, interiorW) * windowLod;
 
     // Street lamps at any distance: the interpolated per-vertex sum covers the
     // far field, the exact per-pixel loop takes over within a few hundred metres.

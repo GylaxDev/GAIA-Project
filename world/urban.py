@@ -12,11 +12,11 @@ Part kinds written by this module:
     8.0   neon sign / billboard / marquee   (drawn by the neon shader)
     9.0   crown LED strip / spire beacon    (neon shader, additive)
     10.0  opaque parallax storefront        (building shader)
-    7.0   painted metal props               (opaque building shader)
+    7.0   wood/metal/concrete street props   (opaque building shader)
     11.0  road marking decal               (terrain shader, road-material inputs)
 
 The geometry is intentionally cheap: flat storefront portals and fascias,
-with boxes for mounted canopies, door hardware and street furniture. Interior
+with cached low-poly furniture and boxes for mounted canopies and hardware. Interior
 depth and frames come from the material shader, not extra meshes.
 """
 from __future__ import annotations
@@ -26,11 +26,13 @@ import math
 import numpy as np
 import shapely
 from shapely.geometry import LineString, Polygon
+from shapely.ops import unary_union
 
 from ..core.config import ROAD_SURFACE, ROAD_WIDTHS
 from .road_layout import road_width
 from .surface_geometry import TerrainDraper, refine_triangles, terrain_path, vertex_normals
 from .data_fetcher import Building, RoadPath, road_paths_from_roads, sample_path_position
+from .street_furniture import bench_template, bin_template, hydrant_template, bollard_template
 
 STRIDE = 17
 
@@ -159,6 +161,23 @@ class _Sink:
             return None
         return (np.ascontiguousarray(np.vstack(self.v), np.float32),
                 np.ascontiguousarray(np.concatenate(self.i), np.uint32))
+
+    def instance(self, pair, base, tangent, normal, z, seed=0., slope=(0., 0.)):
+        """Append a cached metric prop, reflecting winding on the opposite curb."""
+        v, idx = pair
+        rotation = np.array([[tangent[0], normal[0], 0.],
+                             [tangent[1], normal[1], 0.], [slope[0], slope[1], 1.]])
+        block = v.copy()
+        block[:, :3] = v[:, :3] @ rotation.T + np.r_[base, z]
+        block[:, 3:6] = v[:, 3:6] @ np.linalg.inv(rotation)
+        block[:, 3:6] /= np.maximum(np.linalg.norm(block[:, 3:6], axis=1, keepdims=True), 1e-8)
+        block[:, 10] = np.mod(v[:, 10]+seed, 1.)
+        indices = idx.reshape(-1, 3)
+        if np.linalg.det(rotation) < 0.:
+            indices = indices[:, [0, 2, 1]]
+        self.v.append(block)
+        self.i.append(indices.ravel()+np.uint32(self.n))
+        self.n += len(block)
 
 
 def merge(parts):
@@ -453,23 +472,52 @@ def _paths(roads, hf, sea_z, bbox):
         return []
 
 
-def build_props(roads, paths, hf=None, bbox=None, sea_z=0.0, buildings=None):
-    """Street furniture; real signal furniture comes from the traffic graph."""
+_WALK_FURNITURE_HIGHWAYS = frozenset(('footway', 'pedestrian'))
+_WALK_FURNITURE_SPACING = 140.0
+_WALK_FURNITURE_CELL = 160.0
+_WALK_FURNITURE_PER_CELL = 3
+_MAX_WALK_FURNITURE = 240
+_FOOTPATH_LIFT = .10
+
+
+def build_props(roads, paths, hf=None, bbox=None, sea_z=0.0, buildings=None, pavement=None,
+                trees=None):
+    """Street furniture; real signal furniture comes from the traffic graph.
+
+    Dense centres often map their pavements as separate ``footway`` ways and tag
+    the carriageway ``sidewalk:both=separate``. Those roads deliberately have no
+    implicit band, so furniture must be seated on the mapped footway instead of
+    being skipped. The pass below is spatially thinned to keep the per-tile
+    geometry budget bounded.
+    """
     props, neon = _Sink(), _Sink()
     if not paths:
         return props.mesh(), neon.mesh()
 
-    # Keep furniture out of buildings and intersecting carriageways. In particular,
-    # curb offsets on a short junction arm are not necessarily usable sidewalk.
+    # Keep furniture out of buildings, tree trunks and intersecting carriageways.
+    # In particular, curb offsets on a short junction arm are not necessarily
+    # usable sidewalk.
     obstacles = [b.footprint for b in (buildings or []) if b.min_height < 2.5
                  and b.footprint is not None and not b.footprint.is_empty]
-    obstacles += [LineString(p.points).buffer(p.width*.5, cap_style=2)
-                  for p in paths if not p.tunnel and not (p.level is not None and p.level < 0.)]
+    tree_points = np.asarray(trees, np.float64) if trees is not None and len(trees) else None
+    if tree_points is not None:
+        tree_points = tree_points[np.isfinite(tree_points[:, :2]).all(axis=1), :2]
+        obstacles += [shapely.Point(x, y).buffer(.30) for x, y in tree_points]
+    road_buffers = [LineString(p.points).buffer(p.width*.5, cap_style=2)
+                    for p in paths if not p.tunnel and not (p.level is not None and p.level < 0.)]
+    obstacles += road_buffers
     obstacle_tree = shapely.STRtree(obstacles) if obstacles else None
 
-    def clear(x, y, radius):
+    occupied = []
+
+    def clear(x, y, radius, footprint=None, surface=None):
         if bbox is not None and not (bbox[0]+radius < x < bbox[2]-radius
                                      and bbox[1]+radius < y < bbox[3]-radius): return False
+        if footprint is not None:
+            cover = pavement if surface is None else surface
+            if cover is not None and not cover.covers(footprint): return False
+            if any(footprint.intersects(q) for q in occupied): return False
+            return obstacle_tree is None or not len(obstacle_tree.query(footprint, predicate='intersects'))
         return obstacle_tree is None or not len(obstacle_tree.query(
             shapely.Point(x, y), predicate='dwithin', distance=radius))
 
@@ -511,31 +559,48 @@ def build_props(roads, paths, hf=None, bbox=None, sea_z=0.0, buildings=None):
             z = float(sample_path_z(p, s))
             nx, ny = math.cos(hd + math.pi * 0.5), math.sin(hd + math.pi * 0.5)
             side = 1.0 if si % 2 == 0 else -1.0
+            sides = _sidewalk_sides(p)
+            if not sides[0 if side > 0. else 1]:
+                side = -side
+                if not sides[0 if side > 0. else 1]: continue
             px, py = x+nx*(w*.5+1.12)*side, y+ny*(w*.5+1.12)*side
             top = z+.17 if hf is None else max(z, float(hf.at(np.array([x]), np.array([y]))[0])+.06)+.17
-            if not clear(px, py, .65): continue
             a = np.array([px, py]); tangent = np.array([math.cos(hd), math.sin(hd)])
             normal = np.array([nx, ny])*side
-            if si % 3 == 0:
-                # Slatted bench: two planted feet, seat and back, aligned with the curb.
-                for off in (-.64, .64):
-                    props.edge_box(a, tangent, normal, off-.05, off+.05, -.22, .22, top-.025, top+.45, METAL)
-                for off in (-.21, -.06, .09):
-                    props.edge_box(a, tangent, normal, -.9, .9, off, off+.11, top+.43, top+.49,
-                                   np.array([.30, .25, .19]))
-                props.edge_box(a, tangent, normal, -.84, .84, .18, .25, top+.62, top+.96, METAL)
-            elif si % 3 == 1:
-                # Litter bin with recessed dark opening and a solid rim.
-                props.box(px, py, top-.025, top+.82, .48, .48, METAL, 7.)
-                props.box(px, py, top+.82, top+.94, .50, .50, DARK, 7.)
-                props.box(px, py, top+.94, top+1., .54, .54, METAL, 7.)
+            kind = (si+pi) % 3
+            half_x, half_y = (1.02, .42) if kind == 0 else (.38, .38)
+            footprint = Polygon([a+tangent*dx+normal*dy for dx, dy in
+                                 ((-half_x, -half_y), (half_x, -half_y),
+                                  (half_x, half_y), (-half_x, half_y))])
+            if not clear(px, py, .65, footprint): continue
+            # Sample where the feet stand, not at the road centre. Production
+            # furniture shares the raised slab's datum, including side slopes.
+            if pavement is not None:
+                base = float(hf.at(np.array([px]), np.array([py]))[0]) if hf is not None else sea_z
+                top = max(base, sea_z)+ROAD_SURFACE+.064+SIDEWALK_HEIGHT+.023
+            slope = (0., 0.)
+            if pavement is not None and hf is not None:
+                q = np.array([a-tangent*.5, a+tangent*.5, a-normal*.5, a+normal*.5])
+                h = np.maximum(hf.at(q[:, 0], q[:, 1]), sea_z)
+                slope = (float(h[1]-h[0]), float(h[3]-h[2]))
+            seed = _hash(p.uid or pi+1, si+83)
+            occupied.append(footprint.buffer(.16))
+            if kind == 0:
+                props.instance(bench_template(int(seed > .72)), a, tangent, normal, top-.025, seed, slope)
+            elif kind == 1:
+                props.instance(bin_template(int(seed > .73)), a, tangent, normal, top-.025, seed, slope)
             else:
-                # Small curbside hydrant with stem, cap and hose connection.
-                color = np.array([.40, .12, .08])
-                props.box(px, py, top-.025, top+.08, .40, .40, color, 7.)
-                props.box(px, py, top+.08, top+.62, .22, .22, color, 7.)
-                props.box(px, py, top+.61, top+.74, .30, .30, color, 7.)
-                props.edge_box(a, tangent, normal, -.25, .25, -.09, .09, top+.36, top+.50, color)
+                props.instance(hydrant_template(), a, tangent, normal, top-.025, seed, slope)
+            if pavement is not None and si == 0 and w >= 8. and seed < .32:
+                for shift in (-3.7, -2.4):
+                    q = a+tangent*shift
+                    fp = shapely.Point(*q).buffer(.22)
+                    if not clear(*q, .25, fp): continue
+                    bz = (float(hf.at(np.array([q[0]]), np.array([q[1]]))[0])
+                          if hf is not None else sea_z)
+                    bz = max(bz, sea_z)+ROAD_SURFACE+.064+SIDEWALK_HEIGHT-.002
+                    props.instance(bollard_template(int(seed > .16)), q, tangent, normal, bz, seed)
+                    occupied.append(fp.buffer(.15))
 
         # ---- broad asphalt repairs; subpixel manholes/grates are omitted ----
         for s in np.arange(55.0, p.total - 12.0, 88.0):
@@ -554,6 +619,109 @@ def build_props(roads, paths, hf=None, bbox=None, sea_z=0.0, buildings=None):
                               np.array([0.045, 0.046, 0.048], np.float32), 11.0,
                               emissive=0.0)
 
+    # ---- furniture on separately mapped pavements -------------------------
+    # ``sidewalk:both=separate`` means the visible pavement is its own footway
+    # way, not a band invented from the carriageway. Seat furniture on that
+    # surface so dense centres do not lose every bench, bin and hydrant.
+    walk_paths = road_paths_from_roads(
+        [r for r in (roads or ()) if r.highway in _WALK_FURNITURE_HIGHWAYS
+         and not r.tunnel and not r.covered and not r.bridge and r.layer <= 0
+         and (r.level is None or r.level >= 0.)],
+        min_length=12.0, hf=hf, sea_z=sea_z, bbox=bbox,
+        highways=_WALK_FURNITURE_HIGHWAYS, require_drivable=False)
+    ground_paths = [p for p in paths if not p.tunnel and not p.covered
+                    and not p.bridge and p.layer <= 0
+                    and (p.level is None or p.level >= 0.)]
+    if walk_paths and ground_paths:
+        ground_lines = [LineString(p.points) for p in ground_paths]
+        road_tree = shapely.STRtree(ground_lines)
+        walk_polys = [LineString(p.points).buffer(p.width*.5, cap_style=2, join_style=2)
+                      for p in walk_paths if p.width >= 1.4]
+        if walk_polys:
+            walk_surface = unary_union(walk_polys)
+            ground_buffers = [LineString(p.points).buffer(p.width*.5, cap_style=2)
+                              for p in ground_paths]
+            if ground_buffers:
+                walk_surface = walk_surface.difference(unary_union(ground_buffers))
+            if not walk_surface.is_empty:
+                walk_cover = walk_surface.buffer(.08, join_style=2)
+                candidates = []
+                for wi, wp in enumerate(walk_paths):
+                    if wp.width < 1.4 or wp.total < 12.0: continue
+                    seed = wp.uid or wi + 1
+                    arcs = ([wp.total*.5] if wp.total < 30.0 else
+                            np.arange(8.0 + _hash(seed, 79)*20.0,
+                                      wp.total - 6.0, _WALK_FURNITURE_SPACING))
+                    for arc in arcs:
+                        x, y, heading = sample_path_position(wp, float(arc))
+                        a = np.array([x, y])
+                        tangent = np.array([math.cos(heading), math.sin(heading)])
+                        point = shapely.Point(x, y)
+                        d = int(road_tree.nearest(point))
+                        line, road = ground_lines[d], ground_paths[d]
+                        along = float(line.project(point))
+                        rx, ry, road_heading = sample_path_position(road, along)
+                        delta = a - np.array([rx, ry])
+                        distance = float(np.linalg.norm(delta))
+                        if distance > 12.0: continue
+                        road_tangent = np.array([math.cos(road_heading), math.sin(road_heading)])
+                        # Sidewalk alignments run with their street; crossing
+                        # stubs do not, so this also filters zebra footways.
+                        if abs(float(road_tangent @ tangent)) < .55: continue
+                        left = (road_tangent[0]*delta[1] - road_tangent[1]*delta[0]) > 0.
+                        if _sidewalk_sides(road)[0 if left else 1]: continue
+                        away = (-delta / distance if distance > .25 else
+                                np.array([-tangent[1], tangent[0]]))
+                        away = away - tangent * float(away @ tangent)
+                        length = float(np.linalg.norm(away))
+                        if length < 1e-6: continue
+                        away /= length
+                        kind = int(_hash(seed, 19) * 3.)
+                        half_x, half_y = (1.02, .42) if kind == 0 else (.38, .38)
+                        offset = max(0., wp.width*.5 - (.52 if kind == 0 else .42))
+                        center = a + away * offset
+                        footprint = Polygon([center + tangent*dx + away*dy for dx, dy in
+                                             ((-half_x, -half_y), (half_x, -half_y),
+                                              (half_x, half_y), (-half_x, half_y))])
+                        if not walk_cover.covers(footprint): continue
+                        base = (float(hf.at(np.array([center[0]]), np.array([center[1]]))[0])
+                                if hf is not None else sea_z)
+                        top = max(base, sea_z) + ROAD_SURFACE + _FOOTPATH_LIFT
+                        slope = (0., 0.)
+                        if hf is not None:
+                            q = np.array([center-tangent*.5, center+tangent*.5,
+                                          center-away*.5, center+away*.5])
+                            h = np.maximum(hf.at(q[:, 0], q[:, 1]), sea_z)
+                            slope = (float(h[1]-h[0]), float(h[3]-h[2]))
+                        candidates.append((_hash(seed, int(arc*10)), seed, kind,
+                                           center, tangent, away, footprint, top, slope))
+                # Cap each 160 m cell before the global budget: one long avenue
+                # must not consume every piece in the tile.
+                cells = {}
+                for item in candidates:
+                    key = (int(item[3][0] // _WALK_FURNITURE_CELL),
+                           int(item[3][1] // _WALK_FURNITURE_CELL))
+                    cells.setdefault(key, []).append(item)
+                chosen = []
+                for group in cells.values():
+                    group.sort(key=lambda item: item[0])
+                    chosen.extend(group[:_WALK_FURNITURE_PER_CELL])
+                chosen.sort(key=lambda item: item[0])
+                for _, seed, kind, center, tangent, away, footprint, top, slope in \
+                        chosen[:_MAX_WALK_FURNITURE]:
+                    if not clear(center[0], center[1], .65, footprint, surface=walk_cover):
+                        continue
+                    occupied.append(footprint.buffer(.16))
+                    if kind == 0:
+                        props.instance(bench_template(int(_hash(seed, 23) > .72)),
+                                       center, tangent, away, top-.025, seed, slope)
+                    elif kind == 1:
+                        props.instance(bin_template(int(_hash(seed, 29) > .73)),
+                                       center, tangent, away, top-.025, seed, slope)
+                    else:
+                        props.instance(hydrant_template(), center, tangent, away,
+                                       top-.025, seed, slope)
+
     return props.mesh(), neon.mesh()
 
 
@@ -570,6 +738,22 @@ def sample_path_z(p: RoadPath, s: float) -> float:
 SIDEWALK_WIDTH = 2.15
 SIDEWALK_CLEARANCE = .035
 SIDEWALK_HEIGHT = .17
+
+
+def _sidewalk_sides(p):
+    return getattr(p, 'sidewalks', ()) or (p.highway not in ('motorway', 'motorway_link'),) * 2
+
+
+def _sidewalk_band(p):
+    """The same source-relative band for pavement layout and final tessellation."""
+    sides = _sidewalk_sides(p)
+    if not any(sides): return None
+    line = LineString(p.points)
+    options = dict(cap_style=2, join_style=2, mitre_limit=2.)
+    outer = (line.buffer(p.width*.5+SIDEWALK_WIDTH, **options) if all(sides) else
+             line.buffer((1. if sides[0] else -1.)*(p.width*.5+SIDEWALK_WIDTH),
+                         single_sided=True, **options))
+    return outer.difference(line.buffer(p.width*.5, cap_style=2, join_style=2))
 
 # Junction zebra crossings.  Bars run with the traffic and step across the
 # carriageway, so every band reaches the kerb (and its sidewalk) on both sides.
@@ -799,12 +983,15 @@ def _stop_line(sink, p, s, side, draper, extruder):
                       -2., 0., 0., draper, extruder)
 
 
-def build_sidewalks(roads, paths, hf=None, sea_z=0.0, cutouts=None):
+def build_sidewalks(roads, paths, hf=None, sea_z=0.0, cutouts=None, *, aprons=(),
+                    exclusions=None, pits=None, clip=None, pavement=None):
     """Conforming, upward-facing bands, clipped against visible same-grade roads.
 
     Buffer the actual open alignment instead of connecting sampled normals at
     endpoints. Unioning the bands removes duplicates; polygon difference trims
     intersections exactly instead of dropping an entire ten-metre slab.
+    ``pavement`` can supply the planner's already-clipped ground-grade union;
+    elevated sidewalks still use their own road geometry and deck profiles.
     """
     from shapely.geometry.polygon import orient
     from shapely.ops import unary_union
@@ -827,47 +1014,75 @@ def build_sidewalks(roads, paths, hf=None, sea_z=0.0, cutouts=None):
 
     for r in roads:
         if not visible(r): continue
-        group = groups.setdefault(grade(r), dict(roads=[], bands=[], paths=[]))
-        group['roads'].append(r.geometry.buffer(road_width(r) * .5, cap_style=2, join_style=2))
+        key = grade(r)
+        group = groups.setdefault(key, dict(roads=[], bands=[], paths=[]))
+        if pavement is None or key != (0, False, None):
+            group['roads'].append(r.geometry.buffer(road_width(r) * .5, cap_style=2, join_style=2))
     for p in paths:
         if not visible(p): continue
-        group = groups.setdefault(grade(p), dict(roads=[], bands=[], paths=[]))
-        line = LineString(p.points)
-        own = line.buffer(p.width * .5, cap_style=2, join_style=2)
+        key = grade(p)
+        group = groups.setdefault(key, dict(roads=[], bands=[], paths=[]))
         # Include short traffic paths and caller-supplied paths in the obstacle set.
-        group['roads'].append(own)
+        if pavement is None or key != (0, False, None):
+            group['roads'].append(LineString(p.points).buffer(p.width * .5, cap_style=2, join_style=2))
         if p.covered or p.width < 5. or p.total < 30.: continue
-        sides = getattr(p, 'sidewalks', ()) or (p.highway not in ('motorway', 'motorway_link'),) * 2
-        if not any(sides): continue
-        options = dict(cap_style=2, join_style=2, mitre_limit=2.)
-        # One-sided OSM tags follow the imported alignment, including -1 reversals.
-        outer = (line.buffer(p.width * .5 + SIDEWALK_WIDTH, **options) if all(sides) else
-                 line.buffer((1. if sides[0] else -1.) * (p.width * .5 + SIDEWALK_WIDTH),
-                             single_sided=True, **options))
-        group['bands'].append(outer.difference(own))
+        band = _sidewalk_band(p)
+        if band is None: continue
+        group['bands'].append(band)
         group['paths'].append(p)
 
-    draper = TerrainDraper(hf)
-    for (_, elevated, _), group in groups.items():
-        if not group['bands']: continue
-        carriageways = unary_union(group['roads']).buffer(SIDEWALK_CLEARANCE, join_style=2)
-        if cutouts is not None and not cutouts.is_empty:
-            # The zebra replaces the sidewalk across the carriageway; keep the
-            # raised slab clear of the painted bars instead of burying them.
-            carriageways = unary_union([carriageways,
-                                        cutouts.buffer(SIDEWALK_CLEARANCE, join_style=2)])
-        # A bridge keeps its deck profile, never drapes down onto the ground.
-        slabs = ([(band.difference(carriageways), p) for band, p in zip(group['bands'], group['paths'])]
-                 if elevated else [(unary_union(group['bands']).difference(carriageways), None)])
-        for slab, path in slabs:
-            def heights(q):
-                if path is not None:
-                    along, _ = extruder._polyline_frame(path.points, path.arc, q)
-                    zs = path.z if path.z is not None else np.full(len(path.points), sea_z)
-                    return np.interp(along, path.arc, zs) + SIDEWALK_HEIGHT + .064
-                base = np.asarray(hf.at(q[:, 0], q[:, 1]), float) if hf is not None else np.full(len(q), sea_z)
-                return np.maximum(base, sea_z) + ROAD_SURFACE + .064 + SIDEWALK_HEIGHT
+    for apron, p in aprons:
+        group = groups.get(grade(p))
+        if group is not None and not apron.is_empty:
+            group['bands'].append(apron)
+            group['paths'].append(p)
 
+    draper = TerrainDraper(hf)
+    for key, group in groups.items():
+        if not group['bands']: continue
+        elevated = key[1]
+        if pavement is not None and key == (0, False, None):
+            surface = pavement
+        else:
+            carriageways = unary_union(group['roads']).buffer(SIDEWALK_CLEARANCE, join_style=2)
+            if cutouts is not None and not cutouts.is_empty:
+                # The zebra replaces the sidewalk across the carriageway; keep the
+                # raised slab clear of the painted bars instead of burying them.
+                carriageways = unary_union([carriageways,
+                                            cutouts.buffer(SIDEWALK_CLEARANCE, join_style=2)])
+            if not elevated:
+                carriageways = unary_union([carriageways, *[g for g in (exclusions, pits)
+                                                           if g is not None and not g.is_empty]])
+            surface = unary_union(group['bands']).difference(carriageways)
+        if clip is not None: surface = surface.intersection(clip)
+        # A bridge keeps its deck profile, never drapes down onto the ground.
+        if elevated:
+            slabs = [(band.difference(carriageways), p) for band, p in zip(group['bands'], group['paths'])]
+            if clip is not None: slabs = [(slab.intersection(clip), p) for slab, p in slabs]
+        else:
+            # Exclusive ownership preserves the union but gives each street its
+            # own curb-aligned slab UVs. Curbs come from the UNION, not these
+            # partitions: no internal walls or stacked tops at corner joins.
+            slabs = []
+            order = sorted(zip(group['bands'], group['paths']),
+                           key=lambda item: (-item[1].width, item[1].uid,
+                                             tuple(item[1].points[0]), -item[1].total))
+            tree = shapely.STRtree([band for band, _ in order])
+            for rank, (band, p) in enumerate(order):
+                earlier = [order[j][0] for j in tree.query(band, predicate='intersects') if j < rank]
+                slab = band.intersection(surface)
+                if earlier: slab = slab.difference(unary_union(earlier))
+                if not slab.is_empty: slabs.append((slab, p))
+
+        def heights(q, path=None):
+            if elevated and path is not None:
+                along, _ = extruder._polyline_frame(path.points, path.arc, q)
+                zs = path.z if path.z is not None else np.full(len(path.points), sea_z)
+                return np.interp(along, path.arc, zs)+SIDEWALK_HEIGHT+.064
+            base = np.asarray(hf.at(q[:, 0], q[:, 1]), float) if hf is not None else np.full(len(q), sea_z)
+            return np.maximum(base, sea_z)+ROAD_SURFACE+.064+SIDEWALK_HEIGHT
+
+        for slab, path in slabs:
             for poly in polygons_of(slab):
                 if poly.is_empty or poly.area < .01: continue
                 poly = orient(poly, sign=1.)
@@ -876,24 +1091,38 @@ def build_sidewalks(roads, paths, hf=None, sea_z=0.0, cutouts=None):
                 pts, tris = (refine_triangles(pts, tris, 12.) if elevated
                              else draper.conform(pts, tris, max_edge=12.))
                 if not len(tris): continue
-                xyz = np.c_[pts, heights(pts)]
+                xyz = np.c_[pts, heights(pts, path)]
                 block = np.zeros((len(pts), STRIDE), np.float32)
                 block[:, :3], block[:, 3:6] = xyz, vertex_normals(xyz, tris)
                 block[:, 6], block[:, 9], block[:, 16] = 7., 1., 5.
-                block[:, 13:15] = pts
+                along, offset = extruder._polyline_frame(path.points, path.arc, pts)
+                tangent = path.points[1]-path.points[0]
+                tangent /= max(float(np.linalg.norm(tangent)), 1e-9)
+                phase = float(path.points[0] @ tangent)
+                block[:, 10:13] = (_hash(path.uid, 107), 1., SIDEWALK_WIDTH)
+                block[:, 13] = np.abs(offset)-path.width*.5
+                block[:, 14] = along+phase
                 sink.v.append(block)
                 sink.i.append(tris.ravel().astype(np.uint32) + np.uint32(sink.n))
                 sink.n += len(pts)
+        curb_slabs = slabs if elevated else [(surface, None)]
+        for slab, path in curb_slabs:
+            for poly in polygons_of(slab):
+                if poly.is_empty or poly.area < .01: continue
+                poly = orient(poly, sign=1.)
                 # CCW outer rings / CW holes put each curb's outward normal on
-                # the right, including the inner faces bordering carriageways.
+                # the right, including roads and recessed tree pits.
                 for ring in [poly.exterior, *poly.interiors]:
                     q = _densify(np.asarray(ring.coords, float), 8.)
                     if not elevated: q = terrain_path(q, hf)
-                    z = heights(q)
+                    z = heights(q, path)
+                    arc = np.r_[0., np.cumsum(np.linalg.norm(np.diff(q, axis=0), axis=1))]
                     for j in range(len(q) - 1):
                         a, b = q[j], q[j + 1]
                         if np.linalg.norm(b - a) < 1e-5: continue
                         sink.quad((*a, z[j] - SIDEWALK_HEIGHT), (*b, z[j + 1] - SIDEWALK_HEIGHT),
                                   (*b, z[j + 1]), (*a, z[j]),
-                                  np.array([7.5, 0., 0.], np.float32), 5., emissive=0.)
+                                  np.array([7.5, 0., 0.], np.float32), 5., emissive=0.,
+                                  uv=((arc[j], 0.), (arc[j+1], 0.),
+                                      (arc[j+1], SIDEWALK_HEIGHT), (arc[j], SIDEWALK_HEIGHT)))
     return sink.mesh()

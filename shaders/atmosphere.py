@@ -89,8 +89,8 @@ vec3 atmosphere(vec3 viewDir, vec3 sunDir, float sunIrradiance) {
 
 vec3 urbanSky(vec3 dir, float night, float glow) {
     float h = exp(-max(dir.z, 0.) * 4.);
-    vec3 tint = mix(vec3(.30, .42, .65), vec3(.75, .64, .48), h);
-    return (emissionNits(tint, (.11 + .22 * h) * (glow / .3))
+    vec3 tint = mix(vec3(@ZENITH@), vec3(@HORIZON@), h);
+    return (emissionNits(tint, (.11 + .22 * h) * (@GAIN@ * glow / .3))
             + emissionNits(vec3(.36, .52, .50), .00025)) * night;
 }
 
@@ -106,3 +106,9 @@ vec3 analyticAtmosphere(vec3 dir, vec3 sunDir, vec3 horizon, float intensity) {
 }
 #endif
 """
+
+from ..core.atmosphere import URBAN_ZENITH, URBAN_HORIZON, URBAN_GLOW_GAIN
+ATMOSPHERE = (ATMOSPHERE
+              .replace("@ZENITH@", ", ".join(f"{c:.3f}" for c in URBAN_ZENITH))
+              .replace("@HORIZON@", ", ".join(f"{c:.3f}" for c in URBAN_HORIZON))
+              .replace("@GAIN@", f"{URBAN_GLOW_GAIN:.3f}"))

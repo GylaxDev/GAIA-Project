@@ -26,7 +26,8 @@ from .data_fetcher import (Building, Road, GreenSpace, RoadPath, WaterArea,
                            _points_in_polys,
                            strip_ring, sanitize_footprint,
                            road_paths_from_roads, parking_slots_from_paths,
-                           road_profile, sample_path_position, sample_path_z,
+                           road_profile, pedestrian_bridge_pins,
+                           sample_path_position, sample_path_z,
                            PEDESTRIAN_HIGHWAYS)
 from ..core.projection import LocalProjection, tile_bounds
 from .places import Place, parse_places
@@ -34,10 +35,11 @@ from .terrain import HeightField
 from ..traffic.traffic_vec import TileRoads
 from ..traffic.core import TrafficSimulator
 from ..vehicles.vehicle_instances import VEHICLE_STRIDE
-from .road_layout import RoadLayout, road_width
+from .road_layout import RoadLayout, road_width, road_surface_lift
 from .urban import (build_neon, build_props, build_sidewalks, build_crosswalks,
                     crosswalk_bands, crosswalk_cutouts,
                     build_crowns, merge as merge_urban)
+from .streetscape import plan_streetscape, build_roadside_details, align_streetlight_bases
 
 try:
     import mapbox_earcut as earcut
@@ -420,10 +422,12 @@ class MeshExtruder:
     def build(self, buildings, roads, greens, waters, trees, paths=None,
               hf=None, bbox=None, sea_z=0.0):
         b_mesh = self._build_buildings(buildings, hf) if buildings else None
-        bridges = self._build_bridges(roads, hf, bbox, sea_z) if roads else None
+        deck_pins = (pedestrian_bridge_pins(roads, hf, sea_z, bbox, buildings)
+                     if roads else {})
+        bridges = self._build_bridges(roads, hf, bbox, sea_z, deck_pins) if roads else None
         b_mesh = self._merge_meshes(b_mesh, bridges)
         terrain = self._build_terrain(hf, greens, waters, bbox, sea_z)
-        roads_mesh = self._build_ground(roads, hf, bbox, sea_z) if roads else None
+        roads_mesh = self._build_ground(roads, hf, bbox, sea_z, deck_pins) if roads else None
         g_mesh = self._merge_meshes(terrain, roads_mesh)
         w_mesh = self._build_water(waters, sea_z, hf, bbox=bbox) if waters else None
         tree_hf = hf
@@ -1596,7 +1600,7 @@ class MeshExtruder:
         return MeshData(verts, idx, np.empty((0, 6), np.float32), radius, float(flat_h.max()))
 
     # ================================================================ ground
-    def _build_ground(self, roads, hf=None, bbox=None, sea_z=0.0):
+    def _build_ground(self, roads, hf=None, bbox=None, sea_z=0.0, deck_pins=None):
         V, I = [], []
         nv = 0          # running vertex count (V holds blocks, not vertices)
         stride = BLDG_STRIDE
@@ -1633,7 +1637,8 @@ class MeshExtruder:
             keep = np.linalg.norm(np.diff(pts_c, axis=0), axis=1) > 0.05
             pts_c = pts_c[np.concatenate(([True], keep))]
             if len(pts_c) < 2: continue
-            arc, zs = road_profile(pts_c, r, hf, sea_z, bbox)
+            pins = deck_pins.get(id(r)) if deck_pins else None
+            arc, zs = road_profile(pts_c, r, hf, sea_z, bbox, deck_pins=pins)
             total = float(arc[-1])
             if total < 0.5: continue
             is_footpath = r.highway in PEDESTRIAN_HIGHWAYS
@@ -1644,8 +1649,7 @@ class MeshExtruder:
             # Overlapping ribbons (junctions) get a deterministic order: bigger roads sit on top,
             # with a per-road tie-break.  The old 0-4 mm jitter was below depth resolution
             # beyond a few metres, so every junction shimmered.
-            _rank = {"motorway": 5, "trunk": 5, "primary": 4, "secondary": 3, "tertiary": 2}.get(r.highway, 1)
-            lift = 0.10 if is_footpath else 0.012 * _rank + 0.004 * ((ri * 2654435761) % 97) / 97.0
+            lift = road_surface_lift(r.highway, ri, footpath=is_footpath)
 
             for p in polygons_of(buf):
                 if p.is_empty or p.area < 2.0: continue
@@ -1811,7 +1815,7 @@ class MeshExtruder:
             bottom.append((x, y, z0)); top.append((x, y, z1))
         self._box(V, I, bottom, top, color, style, part)
 
-    def _build_bridges(self, roads, hf=None, bbox=None, sea_z=0.0):
+    def _build_bridges(self, roads, hf=None, bbox=None, sea_z=0.0, deck_pins=None):
         V, I = [], []
         towers_seen = set()
         for r in roads:
@@ -1824,7 +1828,8 @@ class MeshExtruder:
             keep = np.linalg.norm(np.diff(pts, axis=0), axis=1) > 0.1
             pts = pts[np.concatenate(([True], keep))]
             if len(pts) < 2: continue
-            arc, zs = road_profile(pts, r, hf, sea_z, bbox)
+            pins = deck_pins.get(id(r)) if deck_pins else None
+            arc, zs = road_profile(pts, r, hf, sea_z, bbox, deck_pins=pins)
             total = float(arc[-1])
             if total < 8.0: continue
 
@@ -2247,9 +2252,14 @@ def mesh_tile_job(payload):
     )
 
     # ---- street-level detail: signage, furniture, sidewalks ----------------
-    neon, neon_solid = build_neon(buildings, hf, paths)
-    props, prop_neon = build_props(roads, paths, hf, bbox, sea_z, buildings=buildings)
     bands = crosswalk_bands(paths)
+    cutouts = crosswalk_cutouts(bands)
+    streetscape = plan_streetscape(roads, paths, buildings, greens, waters, trees, bbox, cutouts)
+    l_mesh = align_streetlight_bases(l_mesh, streetscape, hf, sea_z)
+    neon, neon_solid = build_neon(buildings, hf, paths)
+    props, prop_neon = build_props(roads, paths, hf, bbox, sea_z, buildings=buildings,
+                                  pavement=streetscape.pavement, trees=trees)
+    roadside, pit_soil = build_roadside_details(streetscape, roads, paths, hf, sea_z)
     crosswalks = _meshdata(build_crosswalks(paths, bands, hf))
     spires, spire_neon = build_crowns(buildings, hf)
     try:
@@ -2259,13 +2269,16 @@ def mesh_tile_job(payload):
         print(f"[mesh] times square skipped: {exc}")
         ts_glow = ts_solid = None
     s_mesh = _meshdata(merge_urban([neon, prop_neon, spire_neon, ts_glow]))
-    p_mesh = _meshdata(merge_urban([props, spires, neon_solid, ts_solid]))
+    p_mesh = _meshdata(merge_urban([props, roadside, spires, neon_solid, ts_solid]))
     if crosswalks is not None:
         g_mesh = MeshExtruder._merge_meshes(g_mesh, crosswalks)
     sidewalks = _meshdata(build_sidewalks(roads, paths, hf, sea_z,
-                                          cutouts=crosswalk_cutouts(bands)))
+                                         cutouts=cutouts, aprons=streetscape.aprons,
+                                         exclusions=streetscape.exclusions, pits=streetscape.pits,
+                                         clip=streetscape.clip, pavement=streetscape.pavement))
     if sidewalks is not None:
         g_mesh = MeshExtruder._merge_meshes(g_mesh, sidewalks)
+    g_mesh = MeshExtruder._merge_meshes(g_mesh, _meshdata(pit_soil))
 
     def pack(m, sort=False):
         if m is None: return None

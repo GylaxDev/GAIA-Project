@@ -224,7 +224,7 @@ class GaragePage(Page):
         self.hits.add((fx, fy, fw, fh), "panel")
 
         # Header
-        panel_header(ui, fx + pad, fy + 26, fw - 240, "Garage", "Call a vehicle to a clear road near you")
+        panel_header(ui, fx + pad, fy + 26, fw - 240, "Garage", "Call a vehicle to a clear road near you", icon="car", tile=T.TILE_ORANGE)
 
         cr = close_button(ui, fx + fw - pad - 32, fy + 30, mouse)
         self.hits.add(cr, "close")
@@ -308,7 +308,7 @@ class GaragePage(Page):
         dim = (0.45 if locked else 1.0) * e
 
         card(ui, x, y, w, h, selected=sel, hovered=hov > 0.01, focused=False,
-             enabled=not locked, r=18)
+             enabled=not locked, r=18, tint=display_rgb(self.rgb) + (1.0,) if sel else None)
 
         art_h = h - 50
         draw_vehicle(ui, kind, x + 14, y + 8, w - 28, art_h - 4, self.rgb, dim=dim, t=now if sel else 0.0)
@@ -362,10 +362,10 @@ class GaragePage(Page):
             hov = spring(ui, ("gar_sw", i), float(inside(r, *mouse)), T.SPRING_GENTLE)
             self.hits.add(r, "swatch", i)
             col = display_rgb(rgb)
-            ui.circle(cx_, cy_, rad + hov * 0.8, (col[0], col[1], col[2], 1.0))
-            ui.ring(cx_, cy_, rad, 1.0, (1.0, 1.0, 1.0, 0.16))
+            rr = rad + hov * 0.8
+            ui.rect(cx_ - rr, cy_ - rr, 2 * rr, 2 * rr, (col[0], col[1], col[2], 1.0))
             if i == self.color:
-                ui.ring(cx_, cy_, rad + 3.5, 2.0, T.TEXT_PRIMARY)
+                ui.box(cx_ - rad - 4, cy_ - rad - 4, 2 * rad + 8, 2 * rad + 8, 0.0, None, T.TEXT_PRIMARY, bw=2.0)
 
         # Actions
         bx = x + w - right_w - 16

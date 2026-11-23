@@ -189,33 +189,69 @@ void sf_grass(vec2 wp, mat2 dW, float fw,
 // ----------------------------------------------------------------- concrete
 // sp   slab-space metres (world xy for plazas, ribbon (across, along) for footpaths)
 // J    d(sp)/d(world xy), so a joint's slope can be turned back into a world-space gradient
-void sf_concrete(vec2 sp, mat2 J, vec2 wp, mat2 dW, float slab, float dist, float fw,
+void sf_concrete(vec2 sp, mat2 J, vec2 wp, mat2 dW, vec2 slab, float dist, float fw,
                  out vec3 albedo, out float rough, out vec2 grad) {
     vec2 cell = floor(sp / slab);
     vec2 f = fract(sp / slab);
     float tone = sf_hash(cell + 5.3);
     vec4 tile = sf_texture(wp, 2., dW);
-    vec3 mac = sf_fbm(wp, 0.09, 2, fw, 0.5);
-    albedo = mix(vec3(.255, .253, .241), vec3(.350, .341, .322),
-                 clamp(.5 + mac.x * 1.4 + (tone - .5) * .18, 0., 1.));
-    albedo *= 1. + (tile.r - .5) * .38 - tile.a * .06;
-    rough = .84 + tile.a * .07;
-    grad = sf_texture_gradient(tile) * .60 + mac.yz * .004;
+    vec3 mac = sf_fbm(wp, 0.11, 2, fw, 0.5);
+    // Separate pours age differently; occasional replacement slabs are lighter.
+    // The palette stays neutral and matte, not a bright beige checkerboard.
+    float age = clamp(.38 + mac.x * 1.65 + (tone-.5)*.68, 0., 1.);
+    albedo = mix(vec3(.220, .226, .218), vec3(.373, .365, .341), age);
+    float repair = smoothstep(.89, .94, tone);
+    albedo = mix(albedo, vec3(.405, .402, .378), repair*.75);
+    albedo *= 1. + (tile.r-.5)*.82 - tile.a*.14;
+    rough = .90 + tile.a*.045;
+    grad = sf_texture_gradient(tile)*.90 + mac.yz*.004;
 
     vec2 e = min(f, 1.0 - f) * slab;                               // metres to the nearest joint
     float jd = min(e.x, e.y);
-    float w = .007 + fw * .65;
-    float ic = clamp(.007 / w, 0., 1.);
+    float w = .011 + fw * .65;
+    float ic = clamp(.011 / w, 0., 1.);
     float t = clamp(jd / w, 0.0, 1.0);
     float joint = (1.0 - t * t * (3.0 - 2.0 * t)) * ic;
-    albedo *= 1. - .40 * joint;
-    float grime = (1. - smoothstep(.007, .045 + fw, jd)) * (.045 / (.045 + fw));
-    albedo = mix(albedo, albedo * vec3(.82, .81, .78), grime * .20);
+    albedo *= 1. - .58 * joint;
+    float grime = (1.-smoothstep(.012, .11+fw, jd)) * (.11/(.11+fw));
+    float damp = smoothstep(.40, .68, sf_noised(wp*.34 + 8.1).x);
+    albedo = mix(albedo, albedo*vec3(.73, .72, .67), grime*(.22+damp*.30));
+    albedo *= 1.-damp*.09*(1.-repair);
     rough = mix(rough, .95, joint);
     // slope of the groove, in slab space, mapped to world space
     vec2 gs = (e.x < e.y) ? vec2(sign(0.5 - f.x), 0.0) : vec2(0.0, sign(0.5 - f.y));
     vec2 gj = gs * (.0025 * 6. * t * (1. - t) / w) * ic;
     grad += transpose(J) * gj;
+
+    // A sparse, broken fracture in old pours. Footprint integration makes it
+    // disappear into coverage at distance instead of sparkling like black wire.
+    if (tone < .23 && dist < 100.) {
+        vec2 q = (f-.5)*slab;
+        float wiggle = (sf_noised(vec2(q.y*3.3, tone*31.)).x-.5)*.075;
+        float cd = abs(q.x-q.y*.31-wiggle);
+        float cw = .006 + fw;
+        float crack = (1.-smoothstep(0., cw, cd))*(.006/cw)
+                    * (1.-smoothstep(slab.y*.31, slab.y*.50, abs(q.y)))
+                    * (1.-smoothstep(60., 100., dist));
+        albedo *= 1.-.68*crack;
+    }
+    if (jd < .10 && dist < 90.) {
+        float chips = smoothstep(.59, .79, sf_noised(sp*17.+tone*9.).x)
+                    * (1.-smoothstep(.006, .045+fw, jd)) * (.045/(.045+fw));
+        albedo *= 1.-chips*.24;
+    }
+}
+
+// Stone/concrete curb faces have their own vertical grain and a dirty foot.
+void sf_curb(vec2 uv, mat2 dUV, float fw, out vec3 albedo, out vec2 grad) {
+    vec4 tile = sf_texture(uv, 2., dUV);
+    albedo = mix(vec3(.235, .238, .229), vec3(.335, .329, .303), tile.r);
+    float foot = 1.-smoothstep(.015, .115, uv.y);
+    albedo *= 1.-foot*.32-tile.a*.08;
+    float edge = min(fract(uv.x/1.25), 1.-fract(uv.x/1.25))*1.25;
+    float w = .007+fw;
+    albedo *= 1.-.35*(1.-smoothstep(0., w, edge))*(.007/w);
+    grad = sf_texture_gradient(tile)*.65;
 }
 
 // --------------------------------------------------------------------- dirt
@@ -230,10 +266,9 @@ void sf_dirt(vec2 wp, mat2 dW, float fw, out vec3 albedo, out vec2 grad) {
 // Generic urban infill is worn mineral ground, not an untextured green-grey sheet.
 void sf_urban(vec2 wp, mat2 dW, float fw, out vec3 albedo, out vec2 grad) {
     vec3 macro = sf_fbm(wp, .065, 2, fw, .5);
-    vec4 tile = sf_texture(wp, 3., dW);
-    albedo = mix(vec3(.155, .154, .147), vec3(.220, .213, .197), clamp(.5 + macro.x * 1.4, 0., 1.));
-    albedo *= 1. + (tile.r - .5) * .24;
-    albedo = mix(albedo, albedo * vec3(.96, .95, .91), tile.a * .18);
-    grad = sf_texture_gradient(tile) * .45;
+    vec4 tile = sf_texture(wp, 2., dW);
+    albedo = mix(vec3(.145, .151, .146), vec3(.225, .221, .203), clamp(.5 + macro.x * 1.7, 0., 1.));
+    albedo *= 1.+(tile.r-.5)*.61-tile.a*.11;
+    grad = sf_texture_gradient(tile)*.72;
 }
 """)

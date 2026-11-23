@@ -53,7 +53,7 @@ CITIES = [
 
 DEFAULT_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 ACCENT = (0.04, 0.52, 1.0, 1.0)      # Apple system blue
-MESH_CACHE_VERSION = 54  # v54: dense kerbside parking, street-only parkable classes
+MESH_CACHE_VERSION = 59  # v59: furniture on separately mapped pavements (sidewalk:both=separate)
 
 # Terrain elevation (AWS open terrain tiles, terrarium encoding, no key needed).
 TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"

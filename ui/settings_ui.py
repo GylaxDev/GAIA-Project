@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from . import theme as T
-from .ui_kit import (_in, mix, button, close_button, divider, heading, keycaps, sheet, slider, spring, toggle)
+from .ui_kit import (_in, caps, mix, button, close_button, divider, heading, keycaps, sheet, slider, spring, toggle)
 
 
 class SettingsPanel:
@@ -105,7 +105,7 @@ class SettingsPanel:
         rects, pad = layout["rects"], layout["pad"]
         x, y, pw, ph = rects["panel"]
         sheet(ui, x, y, pw, ph)
-        ui.text("Settings & shortcuts", x + pad, y + 20, T.T_TITLE_3 - 2, T.TEXT_PRIMARY, weight="bold")
+        caps(ui, "// Settings & shortcuts", x + pad, y + 22, T.T_TITLE_2 - 2, T.TEXT_PRIMARY, "bold")
         if pw >= 550:
             state = f"{renderer.aa_samples}× MSAA" if renderer.aa_samples else "No AA"
             state += "  ·  HUD " + ("on" if show_hud else "off")
@@ -121,8 +121,7 @@ class SettingsPanel:
             hover = spring(ui, ("settings", name), float(_in(r, *mouse)), T.SPRING_GENTLE)
             active = name == self.tab + "_tab"
             if active:
-                ui.box(r[0] + 2, r[1] + 2, r[2] - 4, r[3] - 4, (r[3] - 4) / 2,
-                       ((0.46, 0.46, 0.49, 1.0), (0.40, 0.40, 0.43, 1.0)))
+                ui.rect(*r, T.WD_BLUE)
             ui.text_c(label, r[0] + r[2] / 2, r[1] + r[3] / 2, T.T_BODY,
                       T.TEXT_PRIMARY if active else mix(T.TEXT_SECONDARY, T.TEXT_PRIMARY, 0.6 * hover),
                       anchor="center", weight="semibold")

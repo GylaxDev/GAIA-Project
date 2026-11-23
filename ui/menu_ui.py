@@ -22,9 +22,12 @@ from . import icons
 from . import theme as T
 from . import ui_kit
 from ..core.config import CITIES
-from .ui_kit import (alpha, button, card, chip, close_button, divider, ease_out_cubic, ease_out_expo,
-                     focus_ring, glass, group, heading, icon_tile, inside, keycaps, logo_mark, material_box, mix,
-                     panel_header, paragraph, prompt_bar, scrim, scrollbar, separator, sheet, spring, surface)
+from .loading_ui import APP_NAME, TAGLINE
+from .backdrop import Backdrop
+from .ui_kit import (alpha, bar, button, caps, caps_w, card, chip, close_button, divider, dot_grid, ease_out_cubic,
+                     ease_out_expo, focus_ring, frame, glass, group, heading, icon_tile, inside, keycaps, logo_mark,
+                     material_box, mix, panel_header, paragraph, prompt_bar, scrim, scrollbar, separator, sheet,
+                     spring, surface)
 
 # Re-export for other modules
 from .ui_kit import (button as _button, toggle, toggle_rect, slider, segmented, stepper,
@@ -56,8 +59,8 @@ class HitMap:
 def frame_rect(w, h, max_w=1040, max_h=680, margin=36, bottom=70):
     """A centred panel that leaves room for the prompt bar."""
     pw = min(max_w, w - 2 * margin)
-    ph = min(max_h, h - bottom - 24)
-    return ((w - pw) / 2, max(20.0, (h - bottom - ph) / 2), pw, ph)
+    ph = min(max_h, h - bottom - 48)
+    return ((w - pw) / 2, max(44.0, (h - bottom - ph) / 2 + 12), pw, ph)
 
 
 class Page:
@@ -119,28 +122,27 @@ class ConfirmDialog:
         self.rects = {}
 
     def draw(self, ui, w, h, mouse):
-        ui.rect(0, 0, w, h, (0.0, 0.0, 0.02, 0.46))
-        pw = min(340, w - 48)
+        ui.rect(0, 0, w, h, (0.0, 0.0, 0.0, 0.72))
+        pw = min(420, w - 48)
         lines = ui_kit.wrap(ui, self.message, T.T_BODY, pw - 56, "regular", 3)
         lead = 20
-        ph = 28 + 24 + 10 + len(lines) * lead + 24 + 44 + 22
+        ph = 30 + 26 + 14 + len(lines) * lead + 26 + 40 + 26
         x, y = (w - pw) / 2, (h - ph) / 2 - 20
 
-        glass(ui, x, y, pw, ph, T.R_POPUP + 2, "raised")
-        ui.text(self.title, x + pw / 2, y + 28, T.T_TITLE_1 + 1, T.TEXT_PRIMARY, anchor="center", weight="bold")
-        paragraph(ui, self.message, x + pw / 2, y + 28 + 24 + 10, pw - 56, T.T_BODY, T.TEXT_SECONDARY,
-                  lead=lead, max_lines=3, anchor="center")
+        ui.rect(x, y, pw, ph, T.PANEL_BG)
+        frame(ui, x, y, pw, ph, T.LINE, title=self.title)
+        paragraph(ui, self.message, x + 28, y + 34, pw - 56, T.T_BODY, T.TEXT_SECONDARY, lead=lead, max_lines=3)
 
-        gap, bh = 10, 44
-        bw = (pw - 44 - gap) / 2
-        by = y + ph - 22 - bh
-        no_r = (x + 22, by, bw, bh)
-        yes_r = (x + 22 + bw + gap, by, bw, bh)
+        gap, bh = 10, 38
+        bw = (pw - 56 - gap) / 2
+        by = y + ph - 26 - bh
+        no_r = (x + 28, by, bw, bh)
+        yes_r = (x + 28 + bw + gap, by, bw, bh)
         self.rects = {"no": no_r, "yes": yes_r}
 
-        button(ui, no_r, self.no, mouse, key="cf_no", kind="secondary", focus=self.focus == 1, size=T.T_BODY + 1)
+        button(ui, no_r, self.no, mouse, key="cf_no", kind="secondary", focus=self.focus == 1)
         button(ui, yes_r, self.yes, mouse, key="cf_yes",
-               kind="destructive" if self.danger else "primary", focus=self.focus == 0, size=T.T_BODY + 1)
+               kind="destructive" if self.danger else "primary", focus=self.focus == 0)
 
     def key(self, ev, pg, menu):
         k = ev.key
@@ -183,9 +185,11 @@ class MenuSystem:
         self.host, self.store = host, store
         self.page = None                 # name of the open page, or None when closed
         self.stack = []
+        self.backdrop = Backdrop()
         self.title = False               # True on the start screen, before the first "play"
         self.confirm = None
         self.t = 0.0                     # seconds since the current page opened
+        self.clock = 0.0                 # seconds since the menu was created (drives ambient motion)
         self.pages = {"main": MainPage(self), "settings": SettingsPage(self, store),
                       "travel": TravelPage(self), "about": AboutPage(self), "garage": GaragePage(self)}
         self.mouse = (-1.0, -1.0)
@@ -247,7 +251,7 @@ class MenuSystem:
         self.sound("close")
 
     def ask_quit(self):
-        self.confirm = ConfirmDialog("Quit OSM 3D?", "Your settings are saved automatically.",
+        self.confirm = ConfirmDialog(f"Leave {APP_NAME}?", "Your settings are saved automatically. See you soon!",
                                      yes="Quit", no="Keep playing", on_yes=self.host.menu_quit)
         self.sound("open")
 
@@ -259,6 +263,7 @@ class MenuSystem:
     # --------------------------------------------------------------- frame
     def draw(self, ui, w, h, mouse, dt):
         self.t += dt
+        self.clock += dt
         self.mouse, self.size = mouse, (w, h)
         page = self.current
         if page is None:
@@ -267,14 +272,49 @@ class MenuSystem:
         page.mouse = mouse
         ui_kit.POINTER["down"] = self.pressed
 
-        # Smooth page entrance animation
+        ui_kit.prepare(ui)
+        host = self.host
+        info = host.menu_info()
+        ver = getattr(host, "version", "")
+        ui_kit.CHROME["version"] = f"v{ver}" if ver else ""
+        ui_kit.CHROME["user"] = info.get("user") or "guest"
+
         fade = ease_out_expo(self.t / 0.22)
-        scrim(ui, w, h, fade, flat=self.page != "main")
+        opaque = (not info.get("world")) or self.title        # nothing to show behind us: the dot globe
+        tiles = self._tiles()
+        r = min(w, h) * 0.27
+        if opaque and self.page == "main":
+            self.backdrop.draw(ui, w, h, self.clock, globe=(w / 2, h * 0.43, r), tiles=tiles)
+        elif opaque:
+            self.backdrop.draw(ui, w, h, self.clock, dim=0.9 if self.page == "travel" else 0.28,
+                               globe=(w * 0.80, h * 0.60, min(w, h) * 0.46), rings=False, tiles=tiles,
+                               show_globe=self.page != "travel")
+        else:
+            scrim(ui, w, h, fade, flat=True)
+            dot_grid(ui, 0, 0, w, h, 28.0, (1.0, 1.0, 1.0, 0.10), 0.8)
+        self._user_line(ui, info)
         page.draw(ui, w, h, mouse)
         prompt_bar(ui, w, h, page.prompts())
 
         if self.confirm is not None:
             self.confirm.draw(ui, w, h, mouse)
+
+    def _tiles(self):
+        """The host's OpenStreetMap tile manager, if it offers one (used to build the globe)."""
+        src = getattr(self.host, "osm_tiles", None)
+        try:
+            return src() if callable(src) else src
+        except Exception:
+            return None
+
+    @staticmethod
+    def _user_line(ui, info):
+        name = ui_kit.CHROME["user"]
+        ui.ring(24, 13, 4.2, 1.4, ui_kit.WHITE)
+        ui.line(15.5, 27, 17, 21, 1.4, ui_kit.WHITE)
+        ui.line(17, 21, 31, 21, 1.4, ui_kit.WHITE)
+        ui.line(31, 21, 32.5, 27, 1.4, ui_kit.WHITE)
+        ui.text_c(name, 50, 20, T.T_SUBHEAD, ui_kit.WHITE, weight="medium")
 
     def oy(self):
         """Vertical slide-in offset for the current page (logical px)."""
@@ -339,10 +379,10 @@ class MainPage(Page):
         ("resume", "Start exploring", "Jump into the city", "play"),
         ("garage", "Garage", "Spawn and drive any vehicle", "car"),
         ("travel", "Travel", "Visit a city or open the world map", "globe"),
-        ("settings", "Settings", "Graphics, camera, world and more", "sliders"),
+        ("settings", "Settings", "Graphics, camera, world, audio and more", "sliders"),
         ("controls", "Controls", "Keyboard and mouse reference", "keyboard"),
         ("about", "About", "Version, data sources and credits", "info"),
-        ("quit", "Quit", "Close OSM 3D", "power"),
+        ("quit", "Quit", f"Close {APP_NAME}", "power"),
     )
 
     def on_open(self):
@@ -367,92 +407,99 @@ class MainPage(Page):
         return out
 
     # ------------------------------------------------------------- drawing
-    TILES = {"resume": T.TILE_BLUE, "garage": T.TILE_ORANGE, "travel": T.TILE_GREEN, "settings": T.TILE_GRAY,
-             "controls": T.TILE_INDIGO, "about": T.TILE_TEAL, "quit": T.TILE_RED}
-
     def draw(self, ui, w, h, mouse):
         host, menu = self.menu.host, self.menu
         info = host.menu_info()
         wide = w >= 880
-        x = 72.0 if wide else 28.0
-        item_w = min(400.0, w - 2 * x)
-        top = 60.0
+        x = 56.0 if wide else 28.0
 
         # Wordmark
-        logo_mark(ui, x, top, 52.0)
-        ui.text("OSM 3D", x + 68, top + 1, T.T_DISPLAY - 2, T.TEXT_PRIMARY, weight="bold")
-        sub_w = ui.text("City explorer", x + 69, top + 34, T.T_BODY, T.TEXT_TERTIARY, weight="medium")
+        bob = 0.0
+        logo_mark(ui, x, 62, 46.0)
+        caps(ui, APP_NAME, x + 62, 66, 26, T.TEXT_PRIMARY, "bold", track=0.16)
+        sub_w = ui.text("// " + self._greeting(info), x + 62, 96, T.T_BODY - 1, T.WD_GREEN, weight="medium")
         if menu.title is False:
-            chip(ui, x + 69 + sub_w + 10, top + 33, "Paused", T.WARN_AMBER, T.T_CAPTION_2, h=20, pad=9)
+            chip(ui, x + 62 + sub_w + 14, 95, "Paused", T.WD_AMBER, T.T_CAPTION_1, h=20, pad=8)
 
+        # Menu: left-aligned bars, as wide as their text; the selected one is wider and blue
         items = self._items()
-        pad = 6.0
-        y0 = top + 96
-        avail = h - 110 - y0 - 2 * pad
-        item_h = max(42.0, min(56.0, avail / len(items)))
-        e = ease_out_expo(menu.t / 0.34)
-        gx = x - (1.0 - e) * 28.0
-        gh = len(items) * item_h + 2 * pad
-        glass(ui, gx, y0, item_w, gh, T.R_4 + 2, "menu")
-
+        bar_h, pitch = 34.0, 46.0
+        pitch = min(pitch, (h - T.HINT_BAR_H - 150 - 170) / max(1, len(items)))
+        bottom = h - T.HINT_BAR_H - 26
+        y0 = bottom - len(items) * pitch + (pitch - bar_h)
         for i, (ident, label, desc, icon, enabled, note) in enumerate(items):
-            r = (gx + pad, y0 + pad + i * item_h, item_w - 2 * pad, item_h)
+            tw = ui.text_w(label, T.T_SUBHEAD, weight="medium")
+            slide = (1.0 - ease_out_expo((menu.t - 0.04 * i) / 0.30)) * -60.0
+            base_w = max(168.0, tw + 40)
+            ry = y0 + i * pitch
+            r = (x + slide, ry, base_w, bar_h)
             if enabled:
-                self.hits.add(r, "item", i)
-            hov = spring(ui, ("main", i), float(inside(r, *mouse) and enabled), T.SPRING_GENTLE)
-            self._draw_item(ui, r, ident, label, desc, icon, enabled, note, self.focus == i, hov)
-            if i < len(items) - 1 and not (self.focus in (i, i + 1)):
-                separator(ui, r[0] + 56, r[1] + r[3] - 0.5, r[2] - 56 - 14)
+                self.hits.add((x, ry, base_w + 26, bar_h), "item", i)
+            hov = spring(ui, ("main", i), float(inside((x, ry, base_w + 26, bar_h), *mouse) and enabled), T.SPRING_GENTLE)
+            lit = (self.focus == i and enabled) or hov > 0.5
+            self._draw_item(ui, r, label, enabled, note, lit, tw)
 
-        ui.text(f"Version {getattr(host, 'version', '1.0.0')}", x + 4, y0 + gh + 16, T.T_CAPTION_2,
-                T.TEXT_QUATERNARY, weight="medium")
         if wide:
             self._draw_session(ui, w, h, info)
+            focused = items[self.focus] if 0 <= self.focus < len(items) else None
+            if focused:
+                self._draw_hint_panel(ui, w, h, focused)
 
-    def _draw_item(self, ui, r, ident, label, desc, icon, enabled, note, sel, hov):
+    @staticmethod
+    def _greeting(info):
+        try:
+            hour = int(str(info.get("time", "")).split(":")[0])
+        except ValueError:
+            return TAGLINE
+        part = ("Good morning" if 5 <= hour < 12 else "Good afternoon" if 12 <= hour < 18
+                else "Good evening" if 18 <= hour < 23 else "Still up")
+        return f"{part}, explorer"
+
+    def _draw_item(self, ui, r, label, enabled, note, lit, tw):
         x, y, w, h = r
-        if sel and enabled:
-            ui.box(x, y + 1, w, h - 2, 14, T.GROUP_SELECTED)
-        elif hov > 0.01:
-            ui.box(x, y + 1, w, h - 2, 14, (1.0, 1.0, 1.0, 0.07 * hov))
-        col = T.TEXT_PRIMARY if enabled else T.TEXT_QUATERNARY
-        tile = 32.0
-        icon_tile(ui, x + 8, y + (h - tile) / 2, tile, icon, self.TILES.get(ident, T.TILE_GRAY), enabled)
-        tx = x + 56
-        sub = note if note else desc
-        if h >= 52:
-            ui.text(label, tx, y + 8, T.T_SUBHEAD, col, weight="semibold")
-            ui.text(ui.fit(sub, T.T_CAPTION_2, w - 56 - 34), tx, y + h - 22, T.T_CAPTION_2,
-                    T.WARN_AMBER if (note and not enabled) else T.TEXT_TERTIARY, weight="regular")
+        if lit:
+            w += 26
+            ui.rect(x, y, w, h, T.BAR_SELECTED)
         else:
-            ui.text_c(label, tx, y + h / 2, T.T_SUBHEAD, col, weight="semibold")
-        if ident not in ("resume", "quit") and enabled:
-            icons.draw(ui, "chevron_r", x + w - 18, y + h / 2, 15, T.TEXT_TERTIARY, 1.8)
+            ui.rect(x, y, w, h, T.BAR if enabled else (0.05, 0.05, 0.05, 1.0))
+        col = T.TEXT_PRIMARY if enabled else T.TEXT_QUATERNARY
+        ui.text_c(label, x + (36 if lit else 20), y + h / 2, T.T_SUBHEAD, col, weight="medium")
+        if note and not enabled:
+            ui.text_c(note, x + w + 12, y + h / 2, T.T_CAPTION_2, T.WD_AMBER, weight="medium")
 
     def _draw_session(self, ui, w, h, info):
-        pw = 300.0
-        x, y = w - 72 - pw, 60.0
-        rows = [("Location", info.get("location") or "–", "pin", T.TILE_RED),
-                ("Local time", info.get("time") or "–", "clock", T.TILE_ORANGE),
-                ("Weather", info.get("weather") or "–", "cloud", T.TILE_TEAL),
-                ("Mode", info.get("mode") or "–", "route", T.TILE_GREEN)]
-        if info.get("vehicle"):
-            rows.append(("Vehicle", info["vehicle"], "car", T.TILE_BLUE))
+        pw = 330.0
+        x, y = w - 56 - pw, 70.0
+        rows = [("Location", info.get("location")), ("Coordinates", info.get("coords")),
+                ("Local time", info.get("time")), ("Weather", info.get("weather")),
+                ("Mode", info.get("mode")), ("Vehicle", info.get("vehicle"))]
+        rows = [(k, v) for k, v in rows if v and v != "–"]
+        rh = 32
+        ph = 30 + max(1, len(rows)) * rh + 12
+        ui.rect(x, y, pw, ph, T.PANEL_BG)
+        frame(ui, x, y, pw, ph, T.LINE, title="Current session")
+        if not rows:
+            ui.text("No city loaded yet.", x + 20, y + 34, T.T_BODY, T.TEXT_SECONDARY)
+            ui.text("Open the world map or pick a", x + 20, y + 58, T.T_CAPTION_2 + 1, T.TEXT_TERTIARY)
+            ui.text("destination to start exploring.", x + 20, y + 76, T.T_CAPTION_2 + 1, T.TEXT_TERTIARY)
+            return
+        for i, (k, v) in enumerate(rows):
+            ry = y + 26 + i * rh
+            caps(ui, k, x + 20, ry + rh / 2, T.T_CAPTION_1, T.TEXT_TERTIARY, "medium", vcenter=True)
+            ui.text_c(ui.fit(str(v), T.T_BODY, pw - 150), x + pw - 20, ry + rh / 2, T.T_BODY, T.WD_GREEN,
+                      anchor="right", weight="medium")
 
-        rh = 50
-        ph = 70 + len(rows) * rh + 8
-        glass(ui, x, y, pw, ph, T.R_4 + 2, "hud")
-        ui.text("Current session", x + 20, y + 18, T.T_TITLE_1, T.TEXT_PRIMARY, weight="bold")
-        if info.get("coords"):
-            ui.text(info["coords"], x + 20, y + 40, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="medium")
-
-        for i, (k, v, ic, tile) in enumerate(rows):
-            ry = y + 70 + i * rh
-            if i:
-                separator(ui, x + 20, ry - 0.5, pw - 40)
-            icon_tile(ui, x + 20, ry + (rh - 30) / 2, 30, ic, tile)
-            ui.text(k, x + 62, ry + 7, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="medium")
-            ui.text(ui.fit(v, T.T_BODY, pw - 82), x + 62, ry + 24, T.T_BODY, T.TEXT_PRIMARY, weight="semibold")
+    def _draw_hint_panel(self, ui, w, h, item):
+        ident, label, desc, icon, enabled, note = item
+        pw, ph = 420.0, 108.0
+        x, y = w - 56 - pw, h - T.HINT_BAR_H - 26 - ph
+        ui.rect(x, y, pw, ph, T.PANEL_BG)
+        caps(ui, label, x + 20, y + 18, T.T_SUBHEAD, T.TEXT_PRIMARY, "bold")
+        paragraph(ui, note if (note and not enabled) else desc, x + 20, y + 48, pw - 40, T.T_BODY - 1,
+                  T.TEXT_SECONDARY, lead=19, max_lines=2)
+        if enabled:
+            keycaps(ui, x + 20, y + ph - 34, "Enter", 11)
+            caps(ui, "Access", x + 20 + 60, y + ph - 23.5, T.T_CAPTION_2 + 1, T.TEXT_PRIMARY, "bold", vcenter=True)
 
     # --------------------------------------------------------------- input
     def prompts(self):
@@ -537,51 +584,64 @@ class TravelPage(Page):
 
     def on_open(self):
         self.focus = 0
-        self.cols = 2
+        self.cols = 1
+        self.view = None                 # (lat, lon) the globe is turning towards
 
     def _grid(self, w, h):
-        need = 96 + math.ceil(len(CITIES) / 2) * 74 + 10 + 42 + 30
-        fx, fy, fw, fh = frame_rect(w, h, 920, need)
-        fy += self.menu.oy()
-        cols = 2
-        pad = 32
-        cw = (fw - 2 * pad - 14) / cols
-        ch = 64
-        top = fy + 96
-        rects = []
-        for i in range(len(CITIES)):
-            c, r = i % cols, i // cols
-            rects.append((fx + pad + c * (cw + 14), top + r * (ch + 10), cw, ch))
-        return (fx, fy, fw, fh), rects, cols, top + math.ceil(len(CITIES) / cols) * (ch + 10)
+        x = 56.0 if w >= 880 else 28.0
+        bw = min(380.0, w - 2 * x)
+        top = 104.0
+        bar_h, pitch = 34.0, min(42.0, (h - T.HINT_BAR_H - top - 96) / max(1, len(CITIES)))
+        rects = [(x, top + i * pitch, bw, bar_h) for i in range(len(CITIES))]
+        return rects, top + len(CITIES) * pitch + 6, x, bw
 
     def draw(self, ui, w, h, mouse):
-        (fx, fy, fw, fh), rects, cols, bottom = self._grid(w, h)
-        self.cols = cols
+        rects, bottom, x, bw = self._grid(w, h)
+        self.cols = 1
+        menu = self.menu
+        caps(ui, "// Travel", x, 62, 22, T.TEXT_PRIMARY, "bold", track=0.16)
 
-        sheet(ui, fx, fy, fw, fh)
-        panel_header(ui, fx + 32, fy + 28, fw - 100, "Travel", "Jump to a city, or pick any place on the world map")
-        cr = close_button(ui, fx + fw - 32 - 32, fy + 30, mouse)
-        self.hits.add(cr, "close")
+        # The globe turns to the highlighted city
+        cur = CITIES[self.focus] if 0 <= self.focus < len(CITIES) else None
+        if cur is not None:
+            if self.view is None:
+                self.view = (cur[1], cur[2])
+            lat, lon = self.view
+            dlon = (cur[2] - lon + 180.0) % 360.0 - 180.0
+            k = min(1.0, ui.dt * 5.0)
+            self.view = (lat + (cur[1] - lat) * k, lon + dlon * k)
+        if w >= 880:
+            r = min(w, h) * 0.27
+            gx, gy = w * 0.68, h * 0.46
+            if getattr(menu, "backdrop", None) is not None and self.view is not None:
+                menu.backdrop.globe.draw(ui, gx, gy, r, menu.clock, view=self.view)
+            ui.rect(gx - 1, gy - 14, 2, 28, T.WD_GREEN)            # target reticle
+            ui.rect(gx - 14, gy - 1, 28, 2, T.WD_GREEN)
+            ui.ring(gx, gy, 9 + 3 * math.sin(menu.clock * 3.0), 1.5, T.WD_GREEN)
+            if cur is not None:
+                caps(ui, cur[0], gx, gy - r - 54, 24, T.TEXT_PRIMARY, "bold", anchor="center", track=0.12)
+                ui.text(f"{abs(cur[1]):.2f}°{'N' if cur[1] >= 0 else 'S'}   {abs(cur[2]):.2f}°{'E' if cur[2] >= 0 else 'W'}",
+                        gx, gy - r - 22, T.T_BODY, T.WD_GREEN, anchor="center", weight="medium")
 
         for i, (name, lat, lon) in enumerate(CITIES):
-            r = rects[i]
+            r_ = rects[i]
             sel = self.focus == i
-            hov = spring(ui, ("trv", i), float(inside(r, *mouse)), T.SPRING_GENTLE)
-            self.hits.add(r, "city", i)
-            card(ui, *r, selected=sel, hovered=hov > 0.01, enabled=True)
-            icon_tile(ui, r[0] + 14, r[1] + (r[3] - 38) / 2, 38, "pin", T.TILE_GREEN)
-            ui.text(name, r[0] + 64, r[1] + 13, T.T_SUBHEAD, T.TEXT_PRIMARY, weight="semibold")
-            ui.text(f"{abs(lat):.2f}°{'N' if lat >= 0 else 'S'}  {abs(lon):.2f}°{'E' if lon >= 0 else 'W'}",
-                    r[0] + 64, r[1] + 35, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="regular")
+            hov = spring(ui, ("trv", i), float(inside(r_, *mouse)), T.SPRING_GENTLE)
+            self.hits.add(r_, "city", i)
+            lit = sel or hov > 0.5
+            wdt = r_[2] if lit else max(168.0, ui.text_w(name, T.T_SUBHEAD, weight="medium") + 40)
+            ui.rect(r_[0], r_[1], wdt, r_[3], T.BAR_SELECTED if lit else T.BAR)
+            ui.text_c(name, r_[0] + (36 if lit else 20), r_[1] + r_[3] / 2, T.T_SUBHEAD, T.TEXT_PRIMARY, weight="medium")
             if i < 10:
-                keycaps(ui, r[0] + r[2] - 14 - 21, r[1] + (r[3] - 21) / 2, str((i + 1) % 10), 11)
+                keycaps(ui, r_[0] + wdt - 14 - 21 if lit else r_[0] + wdt + 10, r_[1] + (r_[3] - 21) / 2,
+                        str((i + 1) % 10), 11)
 
-        by = bottom + 10
-        b1 = (fx + 32, by, 190, 42)
-        b2 = (fx + 32 + 190 + 12, by, 210, 42)
+        by = bottom + 8
+        b1 = (x, by, 190.0, 36.0)
+        b2 = (x + 202, by, 210.0, 36.0)
         self.hits.add(b1, "map")
         self.hits.add(b2, "search")
-        button(ui, b1, "Open world map", mouse, key="trv_map", kind="primary", icon="globe",
+        button(ui, b1, "Open world map", mouse, key="trv_map", kind="secondary", icon="globe",
                focus=self.focus == len(CITIES))
         button(ui, b2, "Search for a place", mouse, key="trv_search", kind="secondary", icon="pin",
                focus=self.focus == len(CITIES) + 1)

@@ -25,14 +25,16 @@ void main() {
     for (int j = -1; j <= 1; ++j) {
         for (int i = -1; i <= 1; ++i) {
             vec3 c = texture(uScene, vUV + vec2(float(i), float(j)) * (1.0 / 384.0)).rgb;
-            float l = clamp(dot(c, LUMA), 0.0, 24.0);   // a sun disc must not set the exposure
+            // Bright outliers (sun, sky seen from a shaded street, lamps) are capped well below their
+            // true value: a camera exposing for a dark interior lets the window blow out.
+            float l = clamp(dot(c, LUMA), 0.0, 4.0);
             acc += log2(max(l, 1e-3));
         }
     }
     float lg = acc / 9.0;
-    // centre-weighted: the eye adapts mostly to what it is looking at
+    // strongly centre-weighted: exposure follows the subject, not the frame
     vec2 q = vUV - 0.5;
-    float w = 0.30 + 0.70 * exp(-dot(q, q) * 5.5);
+    float w = 0.10 + 0.90 * exp(-dot(q, q) * 9.0);
     FragColor = vec4(lg * w, w, 0.0, 1.0);
 }
 """
@@ -49,15 +51,24 @@ uniform float uMinEV, uMaxEV;
 uniform float uSpeedBrighter; // 1/s when exposure must fall (walking into daylight: fast)
 uniform float uSpeedDarker;   // 1/s when exposure must rise (walking into shade: slow)
 uniform float uReset;
+uniform float uDead;          // EV dead-band: small metering changes are ignored (stable, filmic exposure)
+uniform float uFastK;         // share of a sudden change the "pupil" reflex answers at once
+uniform float uFastRate;      // 1/s of that reflex
 out vec4 FragColor;
 void main() {
     vec2 m = textureLod(uMeter, vec2(0.5), 7.0).rg;
     float lg = m.r / max(m.g, 1e-4);
     float target = clamp((log2(max(uKey, 1e-4)) - lg) * uStrength, uMinEV, uMaxEV);
-    float prev = texelFetch(uPrev, ivec2(0), 0).r;
-    float rate = target < prev ? uSpeedBrighter : uSpeedDarker;
-    float ev = uReset > 0.5 ? target : mix(prev, target, 1.0 - exp(-max(uDt, 0.0) * rate));
-    FragColor = vec4(ev, lg, 0.0, 1.0);
+    vec4 pv = texelFetch(uPrev, ivec2(0), 0);
+    // Two stages, like an eye or a film camera operator: a quick partial reflex (b: fast) and a
+    // slow settle (g: slow).  Stepping into shade is first met with a dark frame that opens up;
+    // stepping out of it blows the highlights and then closes down.
+    float d = target - pv.b;
+    float tgt = pv.b + sign(d) * max(abs(d) - uDead, 0.0);
+    float rate = tgt < pv.b ? uSpeedBrighter : uSpeedDarker;
+    float slow = uReset > 0.5 ? target : mix(pv.b, tgt, 1.0 - exp(-max(uDt, 0.0) * rate));
+    float fast = uReset > 0.5 ? 0.0 : mix(pv.a, uFastK * (target - slow), 1.0 - exp(-max(uDt, 0.0) * uFastRate));
+    FragColor = vec4(slow + fast, lg, slow, fast);
 }
 """
 
@@ -129,10 +140,12 @@ uniform vec2 uResolution;
 uniform float uNight;
 uniform float uTime;
 uniform float uGrade;           // look strength 0..1
-uniform int   uLook;            // 0 neutral, 1 Colorful, 2 Cinematic
+uniform int   uLook;            // 0 neutral, 1 Colorful, 2 Cinematic, 3 Cyberpunk
 uniform float uHdrIn;           // 1: scene is linear HDR, tone-map here
 uniform float uEVComp;
 uniform float uAEOn;
+uniform float uContrast;        // >1: deeper darks, brighter lights, pivoting on the scene average
+uniform float uPivot;           // exposed luminance that stays put (the eye-adaptation key)
 uniform float uLetterbox;       // 0 = off, else bar height as a fraction of the frame
 uniform sampler2D uFlareTex;    // screen-space star + ghosts (1/4 res), see STAR_FS
 uniform float uFlareTexOn;
@@ -253,8 +266,16 @@ vec3 motionScene(vec2 uv, float expo) {
     return sum / wsum * expo;
 }
 
+// Filmic contrast in linear light, rotating around the scene's own average so a bright day and a
+// dark interior both keep their mid-tones.  Scaling by luminance keeps every hue.
+vec3 filmContrast(vec3 c) {
+    float l = dot(c, LUMA);
+    if (l < 1e-6 || uContrast == 1.0) return c;
+    return c * pow(l / uPivot, uContrast - 1.0);
+}
+
 vec3 toneMap(vec3 c) {
-    return uHdrIn > 0.5 ? pow(acesFwd(c), vec3(1.0 / 2.2)) : clamp(c, 0.0, 1.0);
+    return uHdrIn > 0.5 ? pow(acesFwd(filmContrast(c)), vec3(1.0 / 2.2)) : clamp(c, 0.0, 1.0);
 }
 
 // ------------------------------------------------------------------ Colorful
@@ -309,9 +330,37 @@ vec3 matrixGrade(vec3 c, float night) {
     return clamp(c, 0.0, 1.0);
 }
 
+// ------------------------------------------------------- Cyberpunk
+// Night City: cold teal-cyan shadows, hot magenta / amber highlights, lifted tinted blacks,
+// strong contrast.  Saturated pixels (neon, signage) are protected from the split-toning so
+// their own hue survives; vibrance lifts the muted ones.
+vec3 cyberGrade(vec3 c, float night) {
+    c = clamp(c, 0.0, 1.0);
+    float l0 = dot(c, LUMA);
+    float chroma = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+    float sh = 1.0 - smoothstep(0.02, 0.50, l0);
+    float hi = smoothstep(0.30, 0.95, l0);
+    vec3 shadowTint = mix(vec3(0.84, 1.03, 1.10), vec3(0.74, 1.00, 1.20), night);   // teal-cyan
+    vec3 highTint   = mix(vec3(1.10, 1.02, 0.86), vec3(1.16, 0.90, 1.04), night);   // amber -> magenta
+    shadowTint /= dot(shadowTint, LUMA);
+    highTint   /= dot(highTint, LUMA);
+    float protect = smoothstep(0.22, 0.60, chroma) * 0.75;
+    float dayK = mix(0.35, 1.0, night);   // the split-toning is a night-time effect; daylight stays natural
+    vec3 tint = mix(vec3(1.0), shadowTint, sh * 0.90 * dayK) * mix(vec3(1.0), highTint, hi * 0.65 * dayK);
+    c *= mix(tint, vec3(1.0), protect);
+    c = mix(c, c * c * (3.0 - 2.0 * c), mix(0.40, 0.46, night));
+    float l2 = dot(c, LUMA);
+    float chroma2 = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+    float vib = 1.0 + (0.14 + 0.34 * (1.0 - clamp(chroma2 * 2.2, 0.0, 1.0))) * mix(0.30, 1.0, night);
+    c = mix(vec3(l2), c, vib);
+    // matte, teal-violet toe: the blacks of a hazy city are never empty
+    c = c * 0.97 + vec3(0.006, 0.015, 0.024) * mix(0.35, 1.5, night);
+    return clamp(c, 0.0, 1.0);
+}
+
 vec3 look(vec3 c) {
     if (uGrade <= 0.0 || uLook == 0) return c;
-    vec3 g = (uLook == 2) ? matrixGrade(c, uNight) : gtaGrade(c, uNight);
+    vec3 g = (uLook == 3) ? cyberGrade(c, uNight) : (uLook == 2) ? matrixGrade(c, uNight) : gtaGrade(c, uNight);
     return mix(c, g, uGrade);
 }
 
@@ -346,7 +395,7 @@ void main() {
             st += texture(uBloom, vUV + vec2(float(i) * 7.0 * px.x, 0.0)).rgb * w;
             wsum += w;
         }
-        vec3 streakTint = (uLook == 2) ? vec3(0.55, 1.00, 0.85) : vec3(0.80, 0.92, 1.00);
+        vec3 streakTint = (uLook == 3) ? vec3(0.60, 0.85, 1.00) : (uLook == 2) ? vec3(0.55, 1.00, 0.85) : vec3(0.80, 0.92, 1.00);
         glow += st / wsum * uStreak * streakTint;
     }
     glow += sunGlare();
@@ -372,7 +421,7 @@ void main() {
     // 35 mm grain, strongest in the mid-tones
     float gr = gradeHash(gl_FragCoord.xy + fract(uTime) * 61.0) - 0.5;
     float l = dot(col, LUMA);
-    float grain = (uLook == 2) ? 0.010 : 0.022;
+    float grain = (uLook >= 2) ? 0.010 : 0.022;
     col += gr * grain * uGrade * (1.0 - abs(l * 2.0 - 1.0) * 0.6);
 
     // cinematic vignette: aspect-corrected oval (0 at the centre, 1 at the corners), an

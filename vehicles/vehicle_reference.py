@@ -53,8 +53,11 @@ CAMRY = ReferenceDimensions('2020 Camry', 4.885, 1.840, 1.445, 2.825, 1.455,
 # wheelbase. The reference's larger alloy-wheel style uses 215/45R17 tyres.
 PRIUS = ReferenceDimensions('2012 Prius', 4.460, 1.745, 1.490, 2.700, 1.300,
                             1.525, .215, .31265, .2159, .140, 1.960, arch_margin=.040, floor_half=.62)
-F150 = ReferenceDimensions('2020 F-150 SuperCrew / 5.5 ft bed', 5.890, 2.029, 1.961,
-                           3.683, 1.985, 1.717, .275, .40735, .22860, .235, 2.459)
+# Supplied 2015 F-150 Lariat Super Cab FBX, scaled to the 3.683 m wheelbase and
+# baked by tools/bake_f150_model.py.  Values are measured from the baked mesh
+# (body 2100 mm, mirrors 2483 mm, 437.6 mm rolling radius).
+F150 = ReferenceDimensions('2015 Ford F-150 Lariat Super Cab', 5.890, 2.100, 1.912,
+                           3.683, 1.985, 1.705, .300, .43756, .297, .149, 2.483)
 EXPRESS = ReferenceDimensions('Chevrolet Express / regular cargo', 5.691, 2.012, 2.159,
                               3.429, 1.925, 1.721, .245, .38695, .20320, .195, 2.440)
 # Low-floor 11 m city bus (reference: two-door urban bus) and an Isuzu N-series style
@@ -79,7 +82,7 @@ LAMP_ANCHORS = {
     X1: ((1.894, .666, .772), (-2.000, .629, .960), True),
     SEDAN: ((2.07332, .69396, .69905), (-2.20336, .65113, .88099), True),
     TAXI: ((2.07332, .69396, .69905), (-2.20336, .65113, .88099), True),
-    PICKUP: ((2.847, .831, 1.046), (-2.824, .890, 1.043), True),
+    PICKUP: ((2.570, .790, .990), (-2.760, .910, 1.010), True),
     VAN: ((2.715, .768, 1.091), (-2.664, .837, 1.780), False),
     COMPACT: ((1.80462, .61448, .82012), (-2.04324, .50523, .90945), True),
     BUS: ((5.230, .930, .780), (-5.250, .950, 1.050), True),
@@ -601,7 +604,9 @@ def build_reference(m, kind, lod=0):
         baked_camry(m, lod, taxi=kind == TAXI)
         return CAMRY.length
     elif kind == PICKUP:
-        _f150(m, lod)
+        from .vehicle_f150 import _f150 as baked_f150
+        baked_f150(m, lod)
+        return F150.length
     elif kind == VAN:
         _express(m, lod)
     elif kind == COMPACT:

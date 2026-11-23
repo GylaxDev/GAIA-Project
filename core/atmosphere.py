@@ -58,12 +58,22 @@ def twilight_radiance(directions, sun_dir):
     return color * (450. / NITS_PER_SCENE_UNIT) * gain
 
 
+# Night-city sky glow: smog and low cloud lit from below.  Blue overhead, warm smog glow at
+# the horizon (the original, natural tints).  Shared with the GLSL (shaders/atmosphere.py) so the fog colour, the sky and its
+# reflections always agree.  The gain lifts the glow from a barely-visible 0.1 cd/m2 to a
+# haze-lit ~1 cd/m2, which is what lets the skyline read as silhouettes against a glowing sky.
+URBAN_ZENITH = (.30, .42, .65)
+URBAN_HORIZON = (.75, .64, .48)
+URBAN_GLOW_GAIN = 6.0
+
+
 def urban_radiance(directions, night, glow):
     directions = np.asarray(directions, np.float64)
     h = np.exp(-np.maximum(directions[..., 2], 0.) * 4.)
-    tint = np.array([.30, .42, .65]) + (np.array([.75, .64, .48]) - [.30, .42, .65]) * h[..., None]
+    zenith, horizon = np.array(URBAN_ZENITH), np.array(URBAN_HORIZON)
+    tint = zenith + (horizon - zenith) * h[..., None]
     tint /= np.maximum(tint @ LUMA, 1e-5)[..., None]
-    return (tint * ((.11 + .22 * h) * float(glow) / .3)[..., None]
+    return (tint * ((.11 + .22 * h) * URBAN_GLOW_GAIN * float(glow) / .3)[..., None]
             + _tint([.36, .52, .50]) * .00025) * float(night) / NITS_PER_SCENE_UNIT
 
 

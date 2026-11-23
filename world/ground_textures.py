@@ -103,10 +103,14 @@ def build_ground_textures(size=GROUND_TILE, seed=73):
             tone = .49 + (aggregate - .5) * .85 + (fine - .5) * .38 + (noise(20) - .5) * .12
             height = (aggregate - .5) * .0024 + (fine - .5) * .0012
         elif layer == 2:
-            grain, brushed = noise(180), noise((5, 205))
-            feature = _smoothstep(.73, .92, noise(151))
-            tone = .51 + (grain - .5) * .38 + (brushed - .5) * .18 + (noise(14) - .5) * .13 - feature * .12
-            height = (grain - .5) * .0012 + (brushed - .5) * .0005 - feature * .001
+            # Exposed sand/stone, broom drag and irregular pores rather than one
+            # smooth grey tile. All relief is millimetres and wraps at the edges.
+            grain, brushed, stone = noise(180), noise((5, 205)), noise(61)
+            feature = _smoothstep(.69, .91, noise(151))
+            exposed = _smoothstep(.67, .86, stone)
+            tone = (.515 + (grain-.5)*.48 + (brushed-.5)*.19 + (stone-.5)*.19
+                    + (noise(14)-.5)*.16 + exposed*.10 - feature*.20)
+            height = (grain-.5)*.0018 + (brushed-.5)*.0007 + exposed*.0009 - feature*.0016
         else:
             grain, stones = noise(153), noise(43)
             feature = _smoothstep(.68, .89, stones)

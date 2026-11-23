@@ -16,7 +16,7 @@ import time
 
 from . import theme as T
 from ..core.config import ACCENT
-from .ui_kit import (_in, _key_tokens, activity, alpha, button, chip, glass, icon_tile, inside, keycaps, mix, progress,
+from .ui_kit import (_in, _key_tokens, caps, caps_w, activity, alpha, button, chip, glass, icon_tile, inside, keycaps, mix, progress,
                      search_field, spring, surface)
 
 # Re-export for backward compatibility
@@ -271,10 +271,10 @@ class MapsChrome:
         if self.sidebar_open:
             sb = rects["sidebar_bg"]
             glass(ui, *sb, 26, "menu")
-            ui.text_c("Maps", sb[0] + 20, sb[1] + 28, T.T_TITLE_3, T.TEXT_PRIMARY, weight="bold")
+            caps(ui, "// Maps", sb[0] + 20, sb[1] + 28, T.T_TITLE_2, T.TEXT_PRIMARY, "bold", vcenter=True)
             tg = rects["sidebar"]
             hv = spring(ui, ("hv", "sidebar"), 1.0 if _in(tg, *mouse) else 0.0, T.SPRING_GENTLE)
-            ui.circle(tg[0] + 16, tg[1] + 16, 16, mix(T.FILL_3, T.FILL_1, hv))
+            ui.rect(tg[0], tg[1], 32, 32, mix(T.BAR, T.WD_BLUE, hv))
             self.icon_sidebar(ui, tg[0] + 16, tg[1] + 16, 18, T.TEXT_SECONDARY)
             tiles = {"guides": T.TILE_ORANGE, "directions": T.TILE_BLUE}
             rows = (("search", "Search", self.icon_search), ("guides", "Guides", self.icon_guides),
@@ -299,7 +299,7 @@ class MapsChrome:
                 ui.text_c(label, r[0] + 46, r[1] + r[3] / 2, T.T_BODY + 1, T.TEXT_PRIMARY, weight="medium")
             if self.guides_open and cities:
                 c0 = rects["city:0"]
-                ui.text("Travel guides", c0[0] + 8, c0[1] - 22, T.T_CAPTION_2, T.TEXT_SECONDARY, weight="semibold")
+                caps(ui, "// Travel guides", c0[0] + 8, c0[1] - 22, T.T_CAPTION_1, T.TEXT_TERTIARY, "medium")
                 for i, (name, _, _) in enumerate(cities):
                     r = rects[f"city:{i}"]
                     sel = marker is not None and marker[2] == name
@@ -336,8 +336,8 @@ class MapsChrome:
                 ui.line(r[0] + 20, r[1] + 0.5, r[0] + r[2] - 20, r[1] + 0.5, 1.0, (1, 1, 1, 0.30))
                 ui.text("Travel to", r[0] + 18, r[1] + 12, T.T_CAPTION_2, (1, 1, 1, 0.78), weight="medium")
                 ui.text(ui.fit(marker[2], T.T_LABEL + 1, r[2] - 70), r[0] + 18, r[1] + 31, T.T_LABEL + 1,
-                        T.TEXT_INVERTED, weight="semibold")
-                self.icon_arrow_up_right(ui, r[0] + r[2] - 28, r[1] + r[3] / 2, 18, T.TEXT_INVERTED)
+                        T.TEXT_PRIMARY, weight="semibold")
+                self.icon_arrow_up_right(ui, r[0] + r[2] - 28, r[1] + r[3] / 2, 18, T.TEXT_PRIMARY)
             else:
                 ui.box(*r, 20, T.GROUP_HOVER if hv > 0.5 else T.GROUP)
                 ui.text("Pick a place", r[0] + 18, r[1] + 13, T.T_LABEL, T.TEXT_PRIMARY, weight="semibold")
@@ -377,7 +377,7 @@ class MapsChrome:
         glass(ui, M, M, cw, ch, 20, "hud")
         sr = (M + 10, M + 10, 36, 36)
         hv = spring(ui, ("hv", "search"), 1.0 if _in((M, M, 52, ch), *mouse) else 0.0, T.SPRING_GENTLE)
-        ui.circle(sr[0] + 18, sr[1] + 18, 18, mix(T.FILL_3, T.FILL_1, hv))
+        ui.rect(sr[0], sr[1], 36, 36, mix(T.BAR, T.WD_BLUE, hv))
         self.icon_search(ui, sr[0] + 18, sr[1] + 18, 17, T.TEXT_PRIMARY)
         if typing:
             self._field(ui, M + 54, M + 10, cw - 64, ch - 20, query)
@@ -438,9 +438,9 @@ class MapsChrome:
                 T.TEXT_TERTIARY, weight="semibold")
         sp = str(kmh)
         sw = ui.text(sp, x + 18, y + 30, 44, T.TEXT_PRIMARY, weight="bold")
-        ui.text(unit, x + 18 + sw + 6, y + 56, T.T_BODY, T.TEXT_TERTIARY, weight="medium")
+        ui.text(unit, x + 18 + sw + 6, y + 56, T.T_BODY, T.WD_GREEN, weight="medium")
         gcx, gcy = x + w - 18 - 20, y + 14 + 20
-        ui.circle(gcx, gcy, 20, T.FILL_3)
+        ui.rect(gcx - 20, gcy - 20, 40, 40, T.BAR)
         ui.text_c(gear, gcx, gcy, T.T_HEAD, T.TEXT_PRIMARY, anchor="center", weight="bold")
         blink = int(time.time() * 2.6) % 2 == 0
         for sgn, ax in ((-1, gcx - 20 - 36), (1, gcx - 20 - 18)):
@@ -461,11 +461,10 @@ class MapsChrome:
         Chips that would run past ``min_x`` are dropped.  Returns the width used."""
         x = right
         for text, col in items:
-            tw = ui.text_w(text, T.T_CAPTION_2, weight="semibold") + 22
+            tw = caps_w(ui, text, T.T_CAPTION_1) + 22
             if x - tw < min_x:
                 break
             x -= tw
-            chip(ui, x, y, text, col, T.T_CAPTION_2, h=24, pad=11,
-                 fill=(0.0, 0.0, 0.0, 0.34) if col in (T.TEXT_SECONDARY, T.TEXT_TERTIARY, T.TEXT_PRIMARY) else None)
+            chip(ui, x, y, text, col, T.T_CAPTION_1, h=24, pad=11, fill=(0.0, 0.0, 0.0, 0.7))
             x -= 6
         return right - x

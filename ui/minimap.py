@@ -260,8 +260,8 @@ class MinimapPanel:
         self._rect = rect
         x, y, cw, ch = rect
         hover = ui.anim(("minimap", "hover"), float(_in(rect, *mouse)), 16.0)
-        ui.box(x, y, cw, ch, 20, None, None, shadow=18.0, shadow_dy=4.0, shadow_alpha=0.30)
-        ui.box(x, y, cw, ch, 20, fill=(BG_TOP, BG_BOTTOM))
+        ui.box(x, y, cw, ch, 0, None, None, shadow=18.0, shadow_dy=4.0, shadow_alpha=0.30)
+        ui.box(x, y, cw, ch, 0, fill=(BG_TOP, BG_BOTTOM))
 
         cam = self._camera(focus, heading, rect)
         self._cam = cam
@@ -271,12 +271,12 @@ class MinimapPanel:
 
         verts, colors = self._batch(scene, focus, heading, rect, cam)
         if len(verts):
-            ui.triangles(verts, colors, clip=rect, clip_radius=19)
+            ui.triangles(verts, colors, clip=rect, clip_radius=0)
 
         if navigation is not None and navigation.route is not None:
             points = navigation.route.tail(navigation.progress)
             projected, depth = self._project_flat(points[:, :2].astype(np.float32), cam)
-            route_stroke(ui, projected, rect, (depth[:-1] > 1.) & (depth[1:] > 1.), radius=19.)
+            route_stroke(ui, projected, rect, (depth[:-1] > 1.) & (depth[1:] > 1.), radius=0.)
 
         self._places(ui, scene, focus, rect, cam, mouse, navigation)
         if navigation is not None and navigation.destination is not None:
@@ -285,7 +285,7 @@ class MinimapPanel:
         self._puck(ui, self._focus_px[0], self._focus_px[1])
         self._chrome(ui, rect, heading, hover)
         border = T.BORDER_EMPHASIZED if hover > 0.5 else T.BORDER_DEFAULT
-        ui.box(x, y, cw, ch, 20, fill=None, border=border, bw=1.0)
+        ui.box(x, y, cw, ch, 0, fill=None, border=border, bw=1.0)
 
     def _places(self, ui, scene, focus, rect, cam, mouse, navigation):
         places = scene_places(scene)
@@ -471,7 +471,7 @@ class MinimapPanel:
     def _chrome(self, ui, rect, heading, hover):
         x, y, w, h = rect
         # 2D badge: flat ground plane, only the camera is perspective.
-        ui.box(x + 12, y + 12, 32, 20, 10, (0.0, 0.0, 0.0, 0.40))
+        ui.box(x + 12, y + 12, 32, 20, 0, (0.0, 0.0, 0.0, 0.40))
         ui.text_c("2D", x + 28, y + 22, T.T_CAPTION, T.TEXT_SECONDARY,
                   anchor="center", weight="semibold")
         # compass
@@ -497,7 +497,7 @@ class MinimapPanel:
                 weight="medium")
 
         if hover > 0.5:
-            ui.box(x + 12, y + h - 32, 84, 22, 11, fill=(0.0, 0.0, 0.0, 0.55))
+            ui.box(x + 12, y + h - 32, 84, 22, 0, fill=(0.0, 0.0, 0.0, 0.55))
             ui.text_c("Open map", x + 54, y + h - 21, T.T_CAPTION,
                       T.TEXT_PRIMARY, anchor="center", weight="medium")
 

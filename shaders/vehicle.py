@@ -519,10 +519,13 @@ void main() {
         float F = 2.0 * F1 / (1.0 + F1);
         float fogL = cityFog(length(uCamPos - vWorld), vWorld.z, uFogNear, uFogFar);
         if (uLensPass == 0) {
-            // Clear front glazing, cool blue-green; progressively darker privacy
-            // glass behind the B pillar.  Lamp covers keep their signal tints.
+            // Factory privacy film: a neutral charcoal coating absorbs most of
+            // the light crossing the pane, so the cabin and street behind read as
+            // a dark shape instead of a clear view.  The rear side/rear glass
+            // carries the deeper limousine tint behind the B pillar.  Lamp covers
+            // keep their signal tints.
             float privacy = smoothstep(-0.20, -0.70, vLocalXY.x);
-            vec3 clearT = mix(vec3(0.90, 0.94, 0.955), vec3(0.38, 0.42, 0.44), privacy);
+            vec3 clearT = mix(vec3(0.42, 0.46, 0.48), vec3(0.13, 0.15, 0.16), privacy);
             vec3 T = (part == 23) ? vec3(0.66, 0.17, 0.15)
                      : (part == 24) ? clearT : vec3(0.985, 0.99, 0.99);
             FragColor = vec4(mix(T * (1.0 - F), vec3(1.0), fogL), 1.0);

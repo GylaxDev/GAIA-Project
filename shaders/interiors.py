@@ -1,5 +1,50 @@
 """Finite 3D rooms: ray-hit furniture, filtered materials and practical lighting."""
 from .interior_layouts import INTERIOR_LAYOUTS
+from .interior_stores import INTERIOR_STORES
+
+# Room kinds understood by interiorRadianceKind(). The ids are shared with the GLSL
+# constants IK_* below; the first seven keep their historical numbering.
+INTERIOR_KINDS = ('cafe', 'retail', 'market', 'arcade', 'lobby', 'office', 'home',
+                  'mall', 'grocery', 'restaurant', 'pharmacy', 'gym', 'hotel')
+
+_SHOP_TO_KIND = {
+    'supermarket': 'grocery', 'convenience': 'grocery', 'greengrocer': 'grocery',
+    'kiosk': 'grocery', 'general': 'grocery', 'bakery': 'grocery', 'butcher': 'grocery',
+    'chemist': 'pharmacy', 'pharmacy': 'pharmacy', 'medical_supply': 'pharmacy', 'optician': 'pharmacy',
+    'mall': 'mall', 'department_store': 'mall', 'clothes': 'mall', 'shoes': 'mall',
+    'electronics': 'mall', 'jewelry': 'mall', 'cosmetics': 'mall', 'sports': 'mall',
+    'furniture': 'mall', 'bag': 'mall', 'mobile_phone': 'mall', 'gift': 'mall',
+    'antiques': 'market', 'variety_store': 'market', 'second_hand': 'market',
+}
+_AMENITY_TO_KIND = {
+    'restaurant': 'restaurant', 'bar': 'restaurant', 'pub': 'restaurant', 'fast_food': 'restaurant',
+    'food_court': 'restaurant', 'biergarten': 'restaurant', 'cafe': 'cafe', 'ice_cream': 'cafe',
+    'pharmacy': 'pharmacy', 'clinic': 'pharmacy', 'doctors': 'pharmacy', 'dentist': 'pharmacy',
+    'bank': 'lobby', 'post_office': 'lobby', 'townhall': 'lobby',
+}
+
+
+def interior_kind_for_tags(tags, default='home'):
+    """Map OSM tags to an INTERIOR_KINDS id (a stable, data-driven kind for a unit)."""
+    tags = tags or {}
+    name = None
+    if tags.get('shop'):
+        name = _SHOP_TO_KIND.get(tags['shop'], 'retail')
+    elif tags.get('amenity') in _AMENITY_TO_KIND:
+        name = _AMENITY_TO_KIND[tags['amenity']]
+    elif tags.get('leisure') in ('fitness_centre', 'sports_centre', 'fitness_station'):
+        name = 'gym'
+    elif tags.get('tourism') in ('hotel', 'motel', 'hostel', 'guest_house', 'apartment'):
+        name = 'hotel'
+    elif tags.get('office'):
+        name = 'office'
+    elif tags.get('building') in ('retail', 'commercial', 'mall', 'supermarket'):
+        name = 'mall' if tags.get('building') == 'mall' else 'retail'
+    elif tags.get('building') in ('office',):
+        name = 'office'
+    elif tags.get('building') in ('hotel',):
+        name = 'hotel'
+    return INTERIOR_KINDS.index(name or default)
 
 
 INTERIORS = """
@@ -9,7 +54,51 @@ INTERIORS = """
 const int IR_WOOD = 1, IR_METAL = 2, IR_FABRIC = 3, IR_BOOKS = 4;
 const int IR_SCREEN = 5, IR_CABINET = 6, IR_LINEN = 7, IR_PILLOW = 8;
 const int IR_POT = 9, IR_LEAVES = 10, IR_SHADE = 11, IR_STOCK = 12;
-const int IR_PLASTER = 13;
+const int IR_PLASTER = 13, IR_FRIDGE = 14, IR_SIGN = 15, IR_CLOTHES = 16;
+const int IR_RUBBER = 17, IR_COUNTER = 18;
+
+// Room kinds (keep in sync with INTERIOR_KINDS).
+const int IK_CAFE = 0, IK_RETAIL = 1, IK_MARKET = 2, IK_ARCADE = 3, IK_LOBBY = 4;
+const int IK_OFFICE = 5, IK_HOME = 6, IK_MALL = 7, IK_GROCERY = 8, IK_RESTAURANT = 9;
+const int IK_PHARMACY = 10, IK_GYM = 11, IK_HOTEL = 12;
+
+bool interiorIsRowLit(int kind) {
+    // Long linear fixtures running into the room (shop and gym lighting).
+    return kind == IK_MALL || kind == IK_GROCERY || kind == IK_PHARMACY || kind == IK_GYM;
+}
+bool interiorIsShop(int kind) { return interiorIsRowLit(kind); }
+int interiorVariantCount(int kind) { return kind == IK_HOME ? 8 : kind >= IK_OFFICE ? 6 : 3; }
+float interiorMinWidth(int kind) {
+    if (kind == IK_MALL || kind == IK_GYM) return 4.6;
+    if (kind == IK_GROCERY || kind == IK_PHARMACY || kind == IK_RESTAURANT) return 4.0;
+    return kind < IK_OFFICE ? 3.6 : 2.7;
+}
+float interiorMinDepth(int kind) { return kind >= IK_MALL && kind != IK_HOTEL ? 4.2 : 3.1; }
+// Practical lighting colour and brightness differ by use: cool tubes in groceries and
+// pharmacies, warm dim light in restaurants and hotels, neutral bright light in malls.
+vec3 interiorKindTint(int kind) {
+    if (kind == IK_GROCERY || kind == IK_PHARMACY) return vec3(.90, 1.0, 1.10);
+    if (kind == IK_GYM) return vec3(.95, 1.0, 1.06);
+    if (kind == IK_MALL) return vec3(1.04, 1.0, .93);
+    if (kind == IK_RESTAURANT) return vec3(1.20, .93, .62);
+    if (kind == IK_HOTEL) return vec3(1.12, .97, .74);
+    return vec3(1.0);
+}
+float interiorKindGain(int kind) {
+    if (kind == IK_GROCERY) return 1.35;
+    if (kind == IK_PHARMACY) return 1.30;
+    if (kind == IK_MALL) return 1.20;
+    if (kind == IK_GYM) return 1.10;
+    if (kind == IK_RESTAURANT) return .55;
+    if (kind == IK_HOTEL) return .70;
+    return 1.0;
+}
+float interiorFloorGloss(int kind) {
+    if (kind == IK_MALL) return .95;
+    if (kind == IK_PHARMACY) return .80;
+    if (kind == IK_GROCERY) return .60;
+    return 0.0;
+}
 
 float interiorExposureBlend() {
     return clamp(log2(max(uExposure / DAY_EXPOSURE, 1.0)) / NIGHT_EXPOSURE_STOPS, 0.0, 1.0);
@@ -136,14 +225,15 @@ void roomCylinder(RoomRay ray, vec3 c, float radius, float halfHeight,
 }
 
 int interiorVariant(int kind, vec4 h) {
-    return int(floor(h.y * (kind >= 5 ? 6.0 : 3.0)));
+    int count = interiorVariantCount(kind);
+    return min(int(floor(h.y * float(count))), count - 1);
 }
 void interiorLamps(vec3 size, int kind, vec4 h, out vec3 a, out vec3 b) {
-    float drop = kind == 0 || kind == 6 ? .62 : .055;
+    float drop = kind == IK_CAFE || kind == IK_HOME || kind == IK_RESTAURANT ? .62 : .055;
     a = vec3(size.x * (.28 + .08 * h.x), size.y - drop, size.z * (.30 + .08 * h.w));
     b = vec3(size.x * (.68 + .08 * h.w), size.y - drop, size.z * (.63 + .08 * h.x));
 }
-""" + INTERIOR_LAYOUTS + """
+""" + INTERIOR_LAYOUTS + INTERIOR_STORES + """
 
 RoomHit traceInterior(RoomRay ray, vec3 size, int kind, vec4 h) {
     RoomHit hit = RoomHit(ray.exitT, ray.exitN, size * .5, size * .5, 0, 0, 0.0);
@@ -172,6 +262,108 @@ vec3 interiorCloth(vec4 h) {
 float roomRect(vec2 p, vec2 lo, vec2 hi, float fw) {
     vec2 a = smoothstep(lo - fw, lo + fw, p) * (1.0 - smoothstep(hi - fw, hi + fw, p));
     return a.x * a.y;
+}
+
+// Ceiling light strips run into the room; each point is lit by its nearest strip.
+float interiorStripCount(vec3 size) { return clamp(floor(size.x / 2.4), 1.0, 5.0); }
+float interiorStripHalf(int kind) { return kind == IK_MALL ? .045 : kind == IK_GYM ? .05 : .14; }
+float interiorStripMask(vec2 xz, vec3 size, int kind, float pad, float fw) {
+    float cell = size.x / interiorStripCount(size);
+    vec2 p = vec2(mod(xz.x, cell) - cell * .5, xz.y);
+    float hw = interiorStripHalf(kind) + pad;
+    return roomRect(p, vec2(-hw, .45 - pad), vec2(hw, size.z - .45 + pad), fw);
+}
+vec3 interiorRowLight(vec3 P, vec3 size) {
+    float n = interiorStripCount(size), cell = size.x / n;
+    float x = (clamp(floor(P.x / cell), 0.0, n - 1.0) + .5) * cell;
+    return vec3(x, size.y - .04, clamp(P.z, .45, size.z - .45));
+}
+
+vec3 interiorBrand(vec4 h) {
+    float k = fract(h.w * 3.7 + h.x * 1.9);
+    if (k < .17) return vec3(.70, .15, .13);
+    if (k < .34) return vec3(.13, .44, .27);
+    if (k < .51) return vec3(.14, .29, .56);
+    if (k < .68) return vec3(.86, .47, .12);
+    if (k < .84) return vec3(.12, .50, .52);
+    return vec3(.42, .20, .48);
+}
+vec3 interiorKindWall(int kind, vec4 h) {
+    if (kind == IK_MALL) return mix(vec3(.86, .83, .77), vec3(.74, .70, .66), step(.6, h.x));
+    if (kind == IK_GROCERY) return vec3(.88, .88, .85);
+    if (kind == IK_PHARMACY) return vec3(.90, .91, .89);
+    if (kind == IK_GYM) return h.x < .75 ? vec3(.62, .63, .62) : vec3(.27, .28, .30);
+    if (kind == IK_RESTAURANT)
+        return h.x < .35 ? vec3(.20, .29, .24) : h.x < .70 ? vec3(.56, .33, .25) : vec3(.80, .74, .62);
+    if (kind == IK_HOTEL) return h.x < .5 ? vec3(.74, .70, .63) : vec3(.62, .62, .60);
+    return interiorWall(h);
+}
+
+// Planar wall details specific to a use: signage, mirrors, wainscot, brand stripes.
+vec3 interiorWallDetail(vec3 alb, vec2 p, float width, vec3 N, vec3 size, int kind,
+                        vec4 h, vec3 brand, float fw, out float fixture) {
+    fixture = 0.0;
+    bool back = N.z < -.5;
+    float top = size.y;
+    if (kind == IK_GROCERY) {
+        float y0 = top - .78;
+        alb = mix(alb, brand, roomRect(p, vec2(-1.0, y0), vec2(width + 1.0, y0 + .26), fw));
+    } else if (kind == IK_PHARMACY) {
+        float y0 = top - .72;
+        alb = mix(alb, vec3(.19, .56, .33), roomRect(p, vec2(-1.0, y0), vec2(width + 1.0, y0 + .12), fw));
+        if (back) {
+            vec2 q = p - vec2(width * (h.w < .5 ? .62 : .35), min(2.15, top - .58));
+            float cross = max(roomRect(q, vec2(-.05, -.17), vec2(.05, .17), fw),
+                              roomRect(q, vec2(-.17, -.05), vec2(.17, .05), fw));
+            alb = mix(alb, vec3(.10), roomRect(q, vec2(-.25), vec2(.25), fw) * .85);
+            alb = mix(alb, vec3(.15, .80, .38), cross);
+            fixture = cross * .55;
+        }
+    } else if (kind == IK_GYM) {
+        if (back || (h.w > .5 && N.x < -.5)) {
+            float mh = min(2.45, top - .30);
+            float m = roomRect(p, vec2(.35, .14), vec2(width - .35, mh), fw);
+            float seam = band(p.x / 1.15, .012, .988, fw / 1.15);
+            vec3 glass = vec3(.40, .46, .48) * (.62 + .38 * smoothstep(.0, mh, p.y));
+            float glare = band((p.x - p.y * .75) / 2.6, .40, .56, fw / 2.6) * .22;
+            alb = mix(alb, (glass + glare) * (.78 + .22 * seam), m);
+            fixture = m * .012;
+        }
+    } else if (kind == IK_RESTAURANT) {
+        float wain = 1.0 - smoothstep(1.05 - fw, 1.05 + fw, p.y);
+        float panel = band(p.x / .62, .035, .965, fw / .62);
+        alb = mix(alb, interiorWood(h) * .62 * (.82 + .18 * panel), wain * .92);
+        alb = mix(alb, interiorWood(h) * .82, roomRect(p, vec2(-1.0, 1.05), vec2(width + 1.0, 1.11), fw));
+        if (back) {
+            vec2 q = p - vec2(width * (h.w < .5 ? .64 : .34), 1.62);
+            float board = roomRect(q, vec2(-.75, -.45), vec2(.75, .45), fw);
+            float frame = roomRect(q, vec2(-.80, -.50), vec2(.80, .50), fw);
+            float row = floor((q.y + .45) * 7.0);
+            float lines = band((q.y + .45) * 7.0, .25, .55, fw * 7.0)
+                        * roomRect(q, vec2(-.62, -.40), vec2(.62 - .5 * fract(row * .37), .40), fw);
+            alb = mix(alb, interiorWood(h) * .40, frame);
+            alb = mix(alb, mix(vec3(.06, .07, .065), vec3(.62, .62, .58), lines * .8), board);
+        }
+    } else if (kind == IK_MALL) {
+        if (back) {
+            float sx0 = width * .22, sx1 = width * .78, y0 = top - .98, y1 = top - .32;
+            float box = roomRect(p, vec2(sx0, y0), vec2(sx1, y1), fw);
+            float inner = roomRect(p, vec2(sx0 + .06, y0 + .06), vec2(sx1 - .06, y1 - .06), fw);
+            vec2 q = vec2((p.x - sx0) / (sx1 - sx0), (p.y - y0) / (y1 - y0));
+            float letters = band(q.x * 11.0, .15, .70, fw * 11.0 / (sx1 - sx0))
+                          * roomRect(q, vec2(.12, .28), vec2(.88, .72), fw * 4.0);
+            alb = mix(alb, vec3(.12), box);
+            alb = mix(alb, mix(brand, vec3(.93), letters), inner);
+            fixture = inner * (.18 + .32 * letters);
+        } else if (abs(N.x) > .5 && h.w > .4) {
+            float slat = band(p.x / .10, .12, .88, fw / .10);
+            float lower = 1.0 - smoothstep(top - .60 - fw, top - .60 + fw, p.y);
+            alb = mix(alb, interiorWood(h) * (.55 + .35 * slat), lower * .95);
+        }
+    } else if (kind == IK_HOTEL) {
+        alb *= .955 + .045 * band(p.x / .16, .40, .60, fw / .16);
+    }
+    return alb;
 }
 
 vec3 roomArtwork(vec2 uv, vec4 h, float index, float fw) {
@@ -210,16 +402,44 @@ vec3 roomArtwork(vec2 uv, vec4 h, float index, float fw) {
 
 vec3 interiorShell(vec3 P, vec3 N, vec3 size, int kind, vec4 h, float fw,
                     out float fixture) {
-    vec3 wall = interiorWall(h), wood = interiorWood(h), alb = wall;
+    vec3 wall = interiorKindWall(kind, h), wood = interiorWood(h), alb = wall;
+    vec3 brand = interiorBrand(h);
+    int variant = interiorVariant(kind, h);
+    bool shop = interiorIsShop(kind);
     fixture = 0.0;
     float fine = 1.0 - smoothstep(.035, .16, fw);
     bool office = kind == 5;
     if (N.y > .5) {
-        if (office && h.w < .70) {
+        if (kind == IK_HOME && variant == 6) {
+            // Vacant unit: poured screed with a faint trowel mottling.
+            float mott = .5 + .5 * sin(P.x * 3.1 + sin(P.z * 2.3) * 2.0);
+            alb = vec3(.52, .51, .49) * (.92 + .08 * mott) * (.96 + .08 * mix(.5, hash21(floor(P.xz * 40.0)), fine));
+        } else if (office && h.w < .70) {
             vec2 id = floor(P.xz / .60);
             float tile = mix(1.0, .90 + .15 * hash21(id + h.z * 19.0), fine);
             float seam = band(P.x / .60, .012, .988, fw / .60) * band(P.z / .60, .012, .988, fw / .60);
             alb = mix(vec3(.31, .33, .32), vec3(.39, .36, .31), h.x) * tile * (.9 + .1 * seam);
+        } else if (kind == IK_MALL) {
+            // Polished stone concourse tiles with a darker inlay band.
+            float seam = band(P.x / 1.2, .008, .992, fw / 1.2) * band(P.z / 1.2, .008, .992, fw / 1.2);
+            vec2 id = floor(P.xz / 1.2);
+            vec3 stone = mix(vec3(.74, .70, .64), vec3(.60, .58, .55), h.w);
+            alb = stone * mix(1.0, .90 + .14 * hash21(id + h.x * 7.0), fine) * (.84 + .16 * seam);
+        } else if (kind == IK_GROCERY || kind == IK_PHARMACY) {
+            float sz = kind == IK_GROCERY ? .40 : .60;
+            float seam = band(P.x / sz, .015, .985, fw / sz) * band(P.z / sz, .015, .985, fw / sz);
+            float check = mod(floor(P.x / sz) + floor(P.z / sz), 2.0);
+            vec3 base = kind == IK_GROCERY ? vec3(.74, .73, .69) : vec3(.80, .81, .79);
+            alb = base * (1.0 - .06 * check * fine) * (.85 + .15 * seam);
+        } else if (kind == IK_GYM) {
+            float speck = hash21(floor(P.xz * 55.0));
+            alb = vec3(.13, .13, .135) * mix(1.0, .75 + .9 * step(.93, speck), fine)
+                * (.9 + .1 * band(P.x / 1.0, .01, .99, fw));
+        } else if (kind == IK_HOTEL) {
+            float n = hash21(floor(P.xz * 90.0));
+            float stripe = band(P.x / .46, .35, .65, fw / .46);
+            vec3 carpet = h.x < .5 ? vec3(.30, .27, .25) : vec3(.27, .29, .31);
+            alb = carpet * mix(1.0, .90 + .20 * n, fine) * (.93 + .07 * stripe);
         } else if (kind == 2 || kind == 3 || kind == 4) {
             float sz = kind == 3 ? 1.2 : .65;
             float seam = band(P.x / sz, .012, .988, fw / sz) * band(P.z / sz, .012, .988, fw / sz);
@@ -230,14 +450,15 @@ vec3 interiorShell(vec3 P, vec3 N, vec3 size, int kind, vec4 h, float fw,
             float board = hash21(vec2(row, floor((P.z + row * .53) / 1.65)) + h.x * 9.0);
             float seam = band(P.x / .19, .012, .988, fw / .19)
                        * band((P.z + row * .53) / 1.65, .003, .997, fw / 1.65);
-            vec3 timber = kind == 0 ? mix(wood, vec3(.65, .59, .49), .60) : wood;
+            vec3 timber = kind == 0 ? mix(wood, vec3(.65, .59, .49), .60)
+                        : kind == IK_RESTAURANT ? wood * .78 : wood;
             float grain = sin(P.x * 175.0 + sin(P.z * 1.4 + row) * 1.8);
             float grainFade = 1.0 - smoothstep(.005, .035, fw);
             alb = timber * mix(1.0, .91 + .17 * board, fine) * (.94 + .06 * seam)
                   * (1.0 + .025 * grain * grainFade);
         }
         // Woven rugs anchor seating and beds; their detail is flat on the floor.
-        if (kind == 6 || (kind == 0 && interiorVariant(kind, h) == 0)) {
+        if ((kind == 6 && variant != 6) || (kind == 0 && variant == 0)) {
             vec2 halfRug = size.xz * vec2(.32, .28);
             vec2 at = P.xz - size.xz * vec2(.49, .45);
             float rug = roomRect(at, -halfRug, halfRug, fw);
@@ -247,14 +468,29 @@ vec3 interiorShell(vec3 P, vec3 N, vec3 size, int kind, vec4 h, float fw,
         }
     } else if (N.y < -.5) {
         alb = vec3(.86, .85, .81);
-        if (office || kind == 2 || kind == 3) {
+        if (kind == IK_GYM) {
+            // Exposed soffit with ducting beams.
+            float beam = 1.0 - band(P.x / 1.8 + h.w, .04, .96, fw / 1.8);
+            alb = mix(vec3(.30, .30, .31), vec3(.16, .16, .17), beam * .7);
+        } else if (kind == IK_RESTAURANT) {
+            float slat = band(P.x / .12, .08, .92, fw / .12);
+            alb = mix(vec3(.17, .15, .13), vec3(.30, .23, .17), slat * .55);
+        } else if (office || kind == 2 || kind == 3 || kind == IK_GROCERY || kind == IK_PHARMACY) {
             float grid = band(P.x / .60, .009, .991, fw / .60) * band(P.z / .60, .009, .991, fw / .60);
             alb *= .89 + .11 * grid;
-        } else if (kind != 0) {
+        } else if (kind != 0 && kind < IK_MALL) {
             float beam = 1.0 - band(P.z / 2.15 + h.w, .035, .965, fw / 2.15);
             alb = mix(alb, wall * .78, beam * .55);
         }
-        if (kind != 0 && kind != 6) {
+        if (interiorIsRowLit(kind)) {
+            fixture = interiorStripMask(P.xz, size, kind, 0.0, fw);
+            alb *= 1.0 - .22 * interiorStripMask(P.xz, size, kind, .035, fw);
+        } else if (kind == IK_HOTEL) {
+            vec3 a, b; interiorLamps(size, kind, h, a, b);
+            float ra = 1.0 - smoothstep(.085 - fw, .085 + fw, length(P.xz - a.xz));
+            float rb = 1.0 - smoothstep(.085 - fw, .085 + fw, length(P.xz - b.xz));
+            fixture = max(ra, rb);
+        } else if (kind != 0 && kind != 6 && kind != IK_RESTAURANT) {
             vec3 a, b; interiorLamps(size, kind, h, a, b);
             vec2 hs = h.z < .65 ? vec2(.29, .58) : vec2(.10, .94);
             float trim = max(roomRect(P.xz - a.xz, -hs - .04, hs + .04, fw),
@@ -265,7 +501,7 @@ vec3 interiorShell(vec3 P, vec3 N, vec3 size, int kind, vec4 h, float fw,
     } else {
         vec2 p = abs(N.x) > .5 ? P.zy : P.xy;
         float width = abs(N.x) > .5 ? size.z : size.x;
-        bool accent = kind == 0 || (kind == 1 && h.x < .5);
+        bool accent = kind == 0 || (kind == 1 && h.x < .5) || (kind == IK_RESTAURANT && h.w < .45);
         if (accent && (N.x < -.5 || N.z < -.5)) {
             vec2 brick = p / vec2(.28, .085);
             brick.x += .5 * mod(floor(brick.y), 2.0);
@@ -274,15 +510,16 @@ vec3 interiorShell(vec3 P, vec3 N, vec3 size, int kind, vec4 h, float fw,
             clay *= mix(1.0, .92 + .15 * hash21(floor(brick)), fine);
             alb = mix(vec3(.66, .63, .54), clay, inside);
         }
-        if (P.y < .13) alb = wood * .56;
+        if (P.y < .13) alb = shop ? vec3(.24, .24, .25) : wood * .56;
         float cornice = smoothstep(size.y - .14 - fw, size.y - .14 + fw, P.y);
         alb = mix(alb, wall * .85, cornice);
+        alb = interiorWallDetail(alb, p, width, N, size, kind, h, brand, fw, fixture);
         // Back doors, elevator panels, artwork and wall trim are planar details.
         float dx = width * mix(.20, .78, step(.5, h.w));
         if (N.z < -.5) {
             float door = roomRect(p, vec2(dx - .45, .13), vec2(dx + .45, 2.25), fw);
             float inner = roomRect(p, vec2(dx - .40, .14), vec2(dx + .40, 2.19), fw);
-            vec3 doorCol = kind == 4 ? vec3(.53, .55, .53) : wood * .77;
+            vec3 doorCol = kind == 4 || shop ? vec3(.53, .55, .53) : wood * .77;
             alb = mix(alb, mix(vec3(.16), doorCol, inner), door);
             float handle = roomRect(p, vec2(dx + .26, 1.00), vec2(dx + .32, 1.14), fw);
             alb = mix(alb, vec3(.58, .58, .53), handle * door);
@@ -297,7 +534,7 @@ vec3 interiorShell(vec3 P, vec3 N, vec3 size, int kind, vec4 h, float fw,
             float index = floor((p.x + h.z * .7) / spacing);
             vec2 art = vec2(mod(p.x + h.z * .7, spacing) - spacing * .5, p.y - 1.73);
             vec2 hs = office ? vec2(.75, .43) : vec2(.32, .40);
-            float present = step(.22, hash21(vec2(index + h.x * 5.0, N.x + h.y * 8.0)));
+            float present = step(.22, hash21(vec2(index + h.x * 5.0, N.x + h.y * 8.0))) * (shop ? 0.0 : 1.0);
             if (kind == 0 && abs(N.x) > .5) {
                 // A compact gallery of six prints, rather than a repeated wall stripe.
                 float col = floor((p.x - width * .32) / .85);
@@ -341,12 +578,32 @@ vec3 interiorObject(RoomHit hit, vec3 P, vec4 h, float fw, out float fixture) {
         float leaves = .94 + .06 * sin(P.y * 23.0 + sin(P.x * 17.0) * 2.0) * fine;
         alb = vec3(.33, .43, .27) * leaves;
     } else if (m == IR_PLASTER) alb = interiorWall(h);
-    else if (m == IR_SHADE) {
+    else if (m == IR_RUBBER) alb = vec3(.075, .075, .08);
+    else if (m == IR_COUNTER) alb = h.x < .6 ? vec3(.84, .83, .80) : vec3(.20, .21, .22);
+    else if (m == IR_CLOTHES) {
+        // Hanging garments read as narrow vertical colour bands; mannequins are one colour.
+        float u = s.z <= s.x ? q.x : q.z;
+        float pitch = hit.shape == 0 ? .05 : 10.0;
+        float r = hash21(vec2(floor(u / pitch), floor(h.x * 7.0) + hit.center.x));
+        float r2 = fract(r * 7.13);
+        vec3 c = interiorCloth(vec4(r, 0.0, 0.0, r2));
+        c = mix(c, interiorBrand(vec4(r2, 0.0, 0.0, r)), step(.55, r));
+        c = mix(c, vec3(.86), step(.9, r2) * .8);
+        alb = mix(c * .8, c * mix(.80, 1.0, band(u / pitch, .08, .92, fw / pitch)), fine);
+    } else if (m == IR_SIGN) {
+        vec3 c = interiorBrand(vec4(fract(hit.center.x * .31), 0.0, 0.0, fract(hit.center.z * .47)));
+        vec2 face = q.xy;
+        float inset = roomRect(face, -s.xy + .03, s.xy - .03, fw) * abs(hit.n.z);
+        float txt = band(face.x * 5.0, .15, .65, fw * 5.0)
+                  * roomRect(face, vec2(-s.x * .8, -s.y * .45), vec2(s.x * .8, s.y * .45), fw);
+        alb = mix(vec3(.15), mix(c, vec3(.95), txt), inset);
+        fixture = inset * (.30 + .25 * txt);
+    } else if (m == IR_SHADE) {
         float cage = band(atan(q.z, q.x) * 3.18, .10, .87, fw / max(s.x, .05) * 3.18);
         float rim = smoothstep(s.y - .035 - fw, s.y - .035 + fw, abs(q.y));
         alb = mix(vec3(.18, .17, .13), vec3(.84, .78, .59), cage * (1.0 - rim));
         fixture = (hit.n.y < -.5 ? .9 : .58 * cage) * (1.0 - rim * .8);
-    } else if (m == IR_BOOKS || m == IR_STOCK || m == IR_CABINET || m == IR_SCREEN) {
+    } else if (m == IR_BOOKS || m == IR_STOCK || m == IR_CABINET || m == IR_SCREEN || m == IR_FRIDGE) {
         bool alongX = s.z <= s.x;
         vec2 face = alongX ? q.xy : q.zy;
         vec2 hs = alongX ? s.xy : s.zy;
@@ -363,17 +620,26 @@ vec3 interiorObject(RoomHit hit, vec3 P, vec4 h, float fw, out float fixture) {
             float seams = band(uv.x / .55, .008, .992, fw / .55) * band(uv.y / .32, .008, .992, fw / .32);
             alb = mix(interiorWood(h) * .72, interiorWall(h) * .89, step(.5, h.x)) * (.74 + .26 * seams);
         } else {
-            float pitch = m == IR_BOOKS ? .105 : .16;
+            float pitch = m == IR_BOOKS ? .105 : m == IR_FRIDGE ? .12 : .16;
             vec2 id = floor(uv / vec2(pitch, .39));
             vec2 cell = fract(uv / vec2(pitch, .39));
             float r = hash21(id + hit.center.xz + h.w * 13.0);
             float stock = band(uv.x / pitch, .07, .92, fw / pitch)
                         * band(uv.y / .39, .12, mix(.62, .93, r), fw / .39);
             vec3 color = mix(interiorCloth(h), mix(vec3(.71, .55, .35), vec3(.50, .57, .57), r), .62);
+            // Packaged goods are brightly branded; books stay muted.
+            if (m != IR_BOOKS)
+                color = mix(color, interiorBrand(vec4(r, 0.0, 0.0, fract(r * 13.7 + id.y * .31))), .50);
             float label = roomRect(cell, vec2(.2, .30), vec2(.78, .42), fw / pitch);
             color = mix(color, vec3(.78, .75, .65), label * .6);
             vec3 contents = mix(interiorWood(h) * .23, color, mix(.65, stock, fine));
             alb = mix(alb, contents, inset);
+            if (m == IR_FRIDGE) {
+                // Glass-door chiller: lit interior, door mullions every ~0.78 m.
+                float door = band(uv.x / .78, .012, .988, fw / .78);
+                alb = mix(vec3(.58, .60, .60), contents * (.80 + .20 * door), inset);
+                fixture = inset * door * .20;
+            }
         }
     }
     if (m == IR_WOOD || m == IR_CABINET) {
@@ -390,9 +656,27 @@ vec3 furnishedRoom(vec3 d, vec2 o, vec2 size, float D, int kind,
     float pixel = max(footprint.x, footprint.y);
     float lod = max(smoothstep(140.0, 300.0, dist),
                     smoothstep(.14, .55, max(footprint.x / rs.x, footprint.y / rs.y)));
-    vec3 mean = linearColor(interiorWall(h)) * .49 + linearColor(interiorWood(h)) * .19
+    // Use-specific lamp colour and brightness; a vacant flat is mostly dark.
+    lampCol *= interiorKindTint(kind);
+    lit *= interiorKindGain(kind);
+    if (kind == IK_HOME && interiorVariant(kind, h) == 6) lit *= .10;
+    vec3 mean = linearColor(interiorKindWall(kind, h)) * .49 + linearColor(interiorWood(h)) * .19
               + linearColor(vec3(.84, .83, .79)) * .23;
-    vec3 flatRad = interiorLight(mean, .74, .011, lit, lampCol, amb * .45);
+    // Furniture, cabinetry and floor coverings between the ceiling lamps and the glass
+    // absorb a large share of the room light, and part of every pane carries cloth.
+    // Averaging a room down to its brightest surfaces is what turns a distant suite
+    // into one uniform glowing slab: the window then reads far larger and brighter than
+    // the lit slot behind the furniture actually is.  Fold that occlusion into the far
+    // average so an unresolved pane stays a dim, uneven light.
+    float furnish = mix(.58, .82, h.y);
+    float curtain = mix(.12, .36, step(.55, h.w));
+    if (kind >= IK_MALL) curtain *= .45;
+    vec3 flatRad = interiorLight(mean * furnish, .70, interiorIsRowLit(kind) ? .032 : .010,
+                                 lit, lampCol, amb * .40);
+    vec3 lamp = lampCol / max(dot(lampCol, PHOTO_LUMA), 1e-5);
+    vec3 cloth = linearColor(mix(vec3(.80, .77, .70), vec3(.60, .62, .62), h.x))
+               * (amb * 1.2 + lamp * lit * interiorSurfaceGain() * .58);
+    flatRad = mix(flatRad, cloth, curtain);
     if (lod >= .999) return flatRad;
 
     RoomRay ray = interiorRay(d, o, rs, h);
@@ -417,11 +701,30 @@ vec3 furnishedRoom(vec3 d, vec2 o, vec2 size, float D, int kind,
     if (hit.material == 0 && N.y > .5) ao *= 1.0 - .42 * hit.contact;
     if (hit.material > 0 && N.y < .1) ao *= .83 + .17 * smoothstep(.05, .65, P.y);
 
-    vec3 a, b; interiorLamps(rs, kind, h, a, b);
-    vec3 va = a - P, vb = b - P;
-    float aa = dot(va, va), bb = dot(vb, vb);
-    float direct = max(dot(N, va * inversesqrt(max(aa, .0001))), 0.0) / (1.0 + .22 * aa)
-                 + max(dot(N, vb * inversesqrt(max(bb, .0001))), 0.0) / (1.0 + .22 * bb);
+    // Glossy floors mirror the ceiling strips: a blurred, Fresnel-weighted streak.
+    float gloss = hit.material == 0 && N.y > .5 ? interiorFloorGloss(kind) : 0.0;
+    if (gloss > 0.0) {
+        vec3 rd = vec3(ray.d.x, -ray.d.y, ray.d.z);
+        float tc = (rs.y - P.y) / max(rd.y, .02);
+        vec3 Q = P + rd * tc;
+        float f = .035 + .965 * pow(1.0 - clamp(rd.y, 0.0, 1.0), 5.0);
+        float inside = step(0.0, Q.x) * step(Q.x, rs.x) * step(0.0, Q.z) * step(Q.z, rs.z);
+        fixture = max(fixture, interiorStripMask(Q.xz, rs, kind, 0.0, max(fw, .05 + .07 * tc))
+                               * f * gloss * inside * .9);
+    }
+
+    float direct;
+    if (interiorIsRowLit(kind)) {
+        vec3 va = interiorRowLight(P, rs) - P;
+        float aa = dot(va, va);
+        direct = 2.1 * max(dot(N, va * inversesqrt(max(aa, .0001))), 0.0) / (1.0 + .22 * aa);
+    } else {
+        vec3 a, b; interiorLamps(rs, kind, h, a, b);
+        vec3 va = a - P, vb = b - P;
+        float aa = dot(va, va), bb = dot(vb, vb);
+        direct = max(dot(N, va * inversesqrt(max(aa, .0001))), 0.0) / (1.0 + .22 * aa)
+               + max(dot(N, vb * inversesqrt(max(bb, .0001))), 0.0) / (1.0 + .22 * bb);
+    }
     float bounce = mix(.38, .68, max(-N.y, 0.0)) * (1.0 - .18 * P.z / rs.z);
     float diffuse = (direct * 1.65 + bounce) * ao;
     float windowLight = (.32 + 1.05 * exp(-P.z / 3.8)) * (.45 + .55 * max(-N.z, 0.0));
@@ -429,9 +732,15 @@ vec3 furnishedRoom(vec3 d, vec2 o, vec2 size, float D, int kind,
     return mix(rad, flatRad, lod);
 }
 
+// kind is one of IK_* (see INTERIOR_KINDS / interior_kind_for_tags in Python).
+vec3 interiorRadianceKind(vec3 d, vec2 o, vec2 rs, float D, vec4 h, float lit,
+                           vec3 lampCol, vec3 amb, int kind, vec2 footprint) {
+    return furnishedRoom(d, o, rs, D, kind, h, lit, lampCol, amb, footprint);
+}
+// Historical entry point: still available for callers that only know office vs home.
 vec3 interiorRadiance(vec3 d, vec2 o, vec2 rs, float D, vec4 h, float lit,
                        vec3 lampCol, vec3 amb, bool office, vec2 footprint) {
-    return furnishedRoom(d, o, rs, D, office ? 5 : 6, h, lit, lampCol, amb, footprint);
+    return interiorRadianceKind(d, o, rs, D, h, lit, lampCol, amb, office ? IK_OFFICE : IK_HOME, footprint);
 }
 
 vec3 windowDressing(vec3 rad, vec3 d, vec2 pane, vec2 baySize, vec4 rect,
@@ -462,5 +771,60 @@ vec3 windowDressing(vec3 rad, vec3 d, vec2 pane, vec2 baySize, vec4 rect,
     float folds = .83 + (.10 * cos(phase) + .025 * cos(phase * 2.0 + .4)) * detail;
     vec3 cloth = linearColor(mix(vec3(.82, .78, .68), vec3(.61, .65, .64), h.x));
     return mix(rad, cloth * fill * folds, cover * .94);
+}
+
+// Kind-aware dressing: office / home keep the original blinds and curtains; the other
+// uses add what real frontages have (vinyl, frosting, cafe curtains, hotel drapes).
+vec3 windowDressingKind(vec3 rad, vec3 d, vec2 pane, vec2 baySize, vec4 rect,
+                         vec4 h, float lit, vec3 lampCol, vec3 amb, int kind) {
+    if (kind == IK_OFFICE) return windowDressing(rad, d, pane, baySize, rect, h, lit, lampCol, amb, true);
+    if (kind < IK_MALL) return windowDressing(rad, d, pane, baySize, rect, h, lit, lampCol, amb, false);
+    vec2 p = (pane + d.xy / max(d.z, .04) * .18 / baySize - rect.xz)
+           / max(rect.yw - rect.xz, vec2(.05));
+    vec2 fw = max(fwidth(p), vec2(.001));
+    lampCol *= interiorKindTint(kind);
+    vec3 lamp = lampCol / max(dot(lampCol, PHOTO_LUMA), 1e-5);
+    vec3 fill = amb * 1.3 + lamp * lit * interiorKindGain(kind) * interiorSurfaceGain() * .62;
+    float detail = 1.0 - smoothstep(.008, .05, fw.x);
+    float phase = p.x * baySize.x * (rect.y - rect.x) * 42.0 + .3 * sin(p.y * 2.6 + h.z * 5.0);
+    float folds = .82 + (.11 * cos(phase) + .03 * cos(phase * 2.0 + .4)) * detail;
+    if (kind == IK_HOTEL) {
+        // Drapes either side plus a sheer net across the glass.
+        float width = mix(.16, .30, h.x);
+        float cover = max(1.0 - smoothstep(width - fw.x, width + fw.x, p.x),
+                          smoothstep(1.0 - width - fw.x, 1.0 - width + fw.x, p.x)) * step(.12, h.w);
+        cover *= smoothstep(.02 - fw.y, .02 + fw.y, p.y);
+        vec3 drape = linearColor(mix(vec3(.58, .52, .46), vec3(.40, .43, .46), h.x));
+        vec3 net = linearColor(vec3(.88, .87, .82)) * fill;
+        rad = mix(rad, net, step(.40, h.y) * (1.0 - cover) * .20);
+        return mix(rad, drape * fill * folds, cover * .96);
+    }
+    if (kind == IK_RESTAURANT) {
+        // Cafe curtain on a rod across the lower part of the window.
+        float rod = mix(.20, .34, h.z);
+        float cover = (1.0 - smoothstep(rod - fw.y, rod + fw.y, p.y)) * step(.45, h.w);
+        vec3 cloth = linearColor(mix(vec3(.86, .82, .72), vec3(.70, .74, .70), h.x));
+        return mix(rad, cloth * fill * folds, cover * .93);
+    }
+    if (kind == IK_GROCERY || kind == IK_PHARMACY) {
+        // Frosted kick band and promotional decals; pharmacies always carry the band.
+        float frost = (1.0 - smoothstep(.07 - fw.y, .07 + fw.y, p.y))
+                    * (kind == IK_PHARMACY ? 1.0 : step(.35, h.y));
+        vec3 brand = linearColor(interiorBrand(h));
+        float x0 = mix(.05, .50, h.x);
+        float decal = max(roomRect(p, vec2(x0, .18), vec2(x0 + .07, .46), fw.x),
+                          roomRect(p, vec2(x0 + .10, .26), vec2(x0 + .16, .50), fw.x)) * step(.45, h.w);
+        rad = mix(rad, linearColor(vec3(.86, .88, .87)) * fill, frost * .70);
+        return mix(rad, brand * fill * 1.2, decal * .88);
+    }
+    if (kind == IK_GYM) {
+        // A mid-height logo / privacy stripe.
+        float stripe = roomRect(p, vec2(-1.0, .40), vec2(2.0, .49), fw.y) * step(.30, h.w);
+        float logo = roomRect(p, vec2(.08, .415), vec2(.22, .475), fw.x);
+        vec3 brand = linearColor(interiorBrand(h));
+        rad = mix(rad, linearColor(vec3(.82, .84, .84)) * fill, stripe * .62);
+        return mix(rad, brand * fill, logo * stripe * .85);
+    }
+    return rad;   // mall units stay open glass
 }
 """

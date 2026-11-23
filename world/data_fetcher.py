@@ -765,8 +765,35 @@ def bridge_clearance(road, total=0.0, over_water=False) -> float:
     return 4.5 + 1.5 * max(0, road.layer)
 
 
-def road_profile(pts, road, hf=None, sea_z=0.0, bbox=None):
-    """Arc length + per-point road surface height for one alignment."""
+def _effective_bridge_clearance(road, total):
+    """Deck clearance for a bridge that is profiled on its own.
+
+    Short spans are capped so a small crossing does not sit six metres in the
+    air.  Connected elevated footways use the uncapped clearance instead; see
+    :func:`pedestrian_bridge_pins`.
+    """
+    clearance = bridge_clearance(road, total)
+    # A short span over a canal or street must not sit 6-9 m up: that is what
+    # made small bridges look like floating blocks with vertical ends.
+    if not (getattr(road, "structure", "") or "") and total < 250.0:
+        if road.highway in ("motorway", "trunk"):
+            pass
+        elif road.highway in ("primary", "secondary"):
+            clearance = min(clearance, 3.5 + 0.05 * total)
+        else:
+            clearance = min(clearance, 2.4 + 0.04 * total)
+    return clearance
+
+
+def road_profile(pts, road, hf=None, sea_z=0.0, bbox=None, deck_pins=None):
+    """Arc length + per-point road surface height for one alignment.
+
+    ``deck_pins`` holds ``(arc, z)`` points that the deck must pass through.
+    They are used by elevated footway networks, whose OSM ways are split at
+    junctions: per-way end ramps would otherwise dip the deck to the street at
+    every split or dead end.  Pins only raise a profile, never lower it, so a
+    long span's surveyed clearance still wins.
+    """
     pts = np.asarray(pts, np.float64)
     seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
     arc = np.concatenate(([0.0], np.cumsum(seg)))
@@ -794,16 +821,7 @@ def road_profile(pts, road, hf=None, sea_z=0.0, bbox=None):
         zs -= depth * a * b
         return arc, zs
     if road.bridge or road.layer > 0:
-        clearance = bridge_clearance(road, total)
-        # A short span over a canal or street must not sit 6-9 m up: that is what
-        # made small bridges look like floating blocks with vertical ends.
-        if not (getattr(road, "structure", "") or "") and total < 250.0:
-            if road.highway in ("motorway", "trunk"):
-                pass
-            elif road.highway in ("primary", "secondary"):
-                clearance = min(clearance, 3.5 + 0.05 * total)
-            else:
-                clearance = min(clearance, 2.4 + 0.04 * total)
+        clearance = _effective_bridge_clearance(road, total)
         start_ok = end_ok = True
         if bbox is not None:
             x0, y0, x1, y1 = bbox
@@ -817,7 +835,160 @@ def road_profile(pts, road, hf=None, sea_z=0.0, bbox=None):
         a = _smoothstep(arc / ramp) if start_ok else np.ones(len(pts))
         b = _smoothstep((total - arc) / ramp) if end_ok else np.ones(len(pts))
         zs = np.maximum(zs, base + clearance * a * b)
+    if deck_pins:
+        pa = np.asarray([p[0] for p in deck_pins], np.float64)
+        pz = np.asarray([p[1] for p in deck_pins], np.float64)
+        order = np.argsort(pa, kind="stable")
+        pa, pz = pa[order], pz[order]
+        keep = np.concatenate(([True], np.diff(pa) > 1e-4))
+        starts = np.flatnonzero(keep)
+        if len(starts) >= 2:
+            pa = pa[starts]
+            pz = np.maximum.reduceat(pz, starts)
+            zs = np.maximum(zs, np.interp(arc, pa, pz))
     return arc, zs
+
+
+def pedestrian_bridge_pins(roads, hf=None, sea_z=0.0, bbox=None, buildings=()):
+    """Deck pins that keep connected elevated footways continuous.
+
+    Elevated OSM footways are split into many ways at junctions and dead ends.
+    Profiling each way on its own makes every split dive to the street and
+    climb back up, which reads as a floating pavement slab.  This pre-pass
+    finds shared nodes and keeps the whole connected deck at bridge height;
+    ends that abut a building stay at deck height too.  Only free ends of
+    isolated bridges (and stairs) still ramp to the ground.
+
+    ``buildings`` may hold :class:`Building` objects or ``(polygon, height)``
+    pairs.  The returned mapping is keyed by ``id(road)`` and yields sorted
+    ``(arc, z)`` pins including both endpoints, ready for
+    :func:`road_profile`.
+    """
+    ways = [r for r in roads or ()
+            if (r.bridge or r.layer > 0)
+            and not r.tunnel
+            and not (r.level is not None and r.level < 0.)
+            and r.highway in PEDESTRIAN_HIGHWAYS]
+    if not ways:
+        return {}
+
+    road_by, pts_by, arc_by, zs_by, node_rows = {}, {}, {}, {}, {}
+    for r in ways:
+        pts = np.asarray(r.geometry.coords, np.float64)
+        if len(pts) < 2: continue
+        keep = np.linalg.norm(np.diff(pts, axis=0), axis=1) > 0.05
+        pts = pts[np.concatenate(([True], keep))]
+        if len(pts) < 2: continue
+        arc, zs = road_profile(pts, r, hf, sea_z, bbox)
+        key = id(r)
+        road_by[key] = r
+        pts_by[key], arc_by[key], zs_by[key] = pts, arc, zs
+        ids = _node_ids_at(r, pts)
+        if len(ids) != len(pts): continue
+        for j, nid in enumerate(ids):
+            if nid:
+                node_rows.setdefault(int(nid), []).append((key, j))
+
+    shared_ways = set()
+    for rows in node_rows.values():
+        keys = {key for key, _ in rows}
+        if len(keys) > 1:
+            shared_ways.update(keys)
+
+    deck = {}
+    for key, r in road_by.items():
+        total = float(arc_by[key][-1])
+        deck[key] = (bridge_clearance(r, total) if key in shared_ways
+                     else _effective_bridge_clearance(r, total))
+
+    polys, heights = [], []
+    for b in buildings or ():
+        if isinstance(b, (tuple, list)) and len(b) == 2:
+            poly, height = b
+        else:
+            poly, height = getattr(b, "footprint", None), getattr(b, "height", 0.0)
+        try:
+            if poly is None or poly.is_empty: continue
+        except Exception:
+            continue
+        polys.append(poly)
+        heights.append(float(height or 0.0))
+    tree = None
+    if polys:
+        try:
+            tree = shapely.STRtree(np.array(polys, dtype=object))
+        except Exception:
+            tree = None
+
+    def base_at(x, y):
+        if hf is None:
+            return max(0.0, float(sea_z))
+        try:
+            ground = float(hf.at(np.array([x]), np.array([y]))[0])
+        except Exception:
+            ground = 0.0
+        return max(ground, float(sea_z))
+
+    attached = {}
+    for key in pts_by:
+        pts = pts_by[key]
+        for end in (0, -1):
+            x, y = float(pts[end, 0]), float(pts[end, 1])
+            hit = False
+            if tree is not None:
+                point = Point(x, y)
+                try:
+                    hits = np.atleast_1d(tree.query(
+                        point.buffer(15.0), predicate="intersects"))
+                except Exception:
+                    hits = ()
+                for i in hits:
+                    i = int(i)
+                    distance = polys[i].distance(point)
+                    if (distance <= 15.0
+                            and (distance <= 1.0 or heights[i] >= deck[key] - 1.0)):
+                        hit = True
+                        break
+            attached[(key, end)] = hit
+
+    pins = {key: [] for key in pts_by}
+    for rows in node_rows.values():
+        keys = {key for key, _ in rows}
+        if len(keys) < 2: continue
+        key0, j0 = rows[0]
+        x, y = pts_by[key0][j0]
+        joint = base_at(x, y) + max(deck[key] for key in keys)
+        for key, j in rows:
+            pins[key].append((float(arc_by[key][j]), joint))
+
+    for key, r in road_by.items():
+        pts, arc, zs = pts_by[key], arc_by[key], zs_by[key]
+        connected = key in shared_ways
+        for end in (0, -1):
+            x, y = float(pts[end, 0]), float(pts[end, 1])
+            # Stairs must always reach the ground on their free end: pinning a
+            # whole flight to deck height would leave it hanging in the air.
+            # A shared node still lifts their top to the adjoining deck.
+            if r.highway == "steps":
+                z = float(zs[end])
+            elif attached[(key, end)] or connected:
+                z = base_at(x, y) + deck[key]
+            else:
+                z = float(zs[end])
+            pins[key].append((float(arc[end]), z))
+
+    out = {}
+    for key, rows in pins.items():
+        rows.sort()
+        merged = []
+        for a, z in rows:
+            if merged and abs(a - merged[-1][0]) <= 1e-4:
+                merged[-1] = (a, max(z, merged[-1][1]))
+            else:
+                merged.append((a, z))
+        if len(merged) >= 2:
+            out[key] = merged
+    return out
 
 
 def _traffic_points(road, shared_nodes):
@@ -841,17 +1012,24 @@ def _traffic_points(road, shared_nodes):
     return pts[keep]
 
 
-def road_paths_from_roads(roads, min_length=2.0, hf=None, sea_z=0.0, bbox=None):
+def road_paths_from_roads(roads, min_length=2.0, hf=None, sea_z=0.0, bbox=None, *,
+                          highways=DRIVABLE_HIGHWAYS, require_drivable=True):
+    """Sample OSM ways into traffic paths.
+
+    ``highways`` lets callers build pedestrian alignments with the same arc
+    length and terrain profile; ``require_drivable`` is relaxed for footways,
+    whose access tags often forbid motor vehicles by design.
+    """
     roads = list(roads)
     owners = {}
     for r in roads:
-        if r.highway not in DRIVABLE_HIGHWAYS or not r.drivable: continue
+        if r.highway not in highways or (require_drivable and not r.drivable): continue
         for node in set(r.node_ids) - {0}:
             owners[node] = owners.get(node, 0) + 1
     shared_nodes = {node for node, count in owners.items() if count > 1}
     out, seen = [], set()
     for r in roads:
-        if r.highway not in DRIVABLE_HIGHWAYS or not r.drivable: continue
+        if r.highway not in highways or (require_drivable and not r.drivable): continue
         pts = np.asarray(r.geometry.coords, np.float64)
         if len(pts) < 2: continue
         pts = _traffic_points(r, shared_nodes)

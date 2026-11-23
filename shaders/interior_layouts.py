@@ -74,6 +74,12 @@ void roomPendant(RoomRay ray, vec3 at, float ceiling, inout RoomHit hit) {
     roomBox(ray, vec3(at.x, ceiling - length * .5, at.z), vec3(.012, length * .5, .012), IR_METAL, hit);
 }
 
+void roomStool(RoomRay ray, vec2 at, float seatY, inout RoomHit hit) {
+    roomCylinder(ray, vec3(at.x, seatY, at.y), .17, .025, IR_FABRIC, hit);
+    roomCylinder(ray, vec3(at.x, seatY * .5, at.y), .02, seatY * .5, IR_METAL, hit);
+    roomCylinder(ray, vec3(at.x, .012, at.y), .15, .012, IR_METAL, hit);
+}
+
 void officeFurniture(RoomRay ray, vec3 s, vec4 h, inout RoomHit hit) {
     int floorplan = interiorVariant(5, h);
     float w = s.x, d = s.z;
@@ -166,12 +172,31 @@ void homeFurniture(RoomRay ray, vec3 s, vec4 h, inout RoomHit hit) {
         roomChair(ray, at + vec2(.92, .0), vec2(1.0, 0.0), false, hit);
         roomChair(ray, at + vec2(0.0, -.95), vec2(0.0, -1.0), false, hit);
         roomChair(ray, at + vec2(0.0, .95), vec2(0.0, 1.0), false, hit);
-    } else {
+    } else if (floorplan == 3) {
         // Study / studio apartment with a work desk and upholstered daybed.
         roomDesk(ray, vec2(w * .29, d * .38), min(1.5, w * .39), true, hit);
         roomSofa(ray, vec2(w * .56, d * .79), min(2.25, w * .56), hit);
         roomBox(ray, vec3(w - .28, 1.06, d * .47), vec3(.25, 1.06, min(.70, d * .18)), IR_BOOKS, hit);
         roomPlant(ray, vec2(w * .78, d * .20), .76, hit);
+    } else if (floorplan == 6) {
+        // Vacant, unfurnished unit: bare floor, a few packing boxes and a floor lamp.
+        roomBox(ray, vec3(w * .78, .21, d * .84), vec3(.34, .21, .27), IR_WOOD, hit);
+        roomBox(ray, vec3(w * .78 - .08, .60, d * .84 + .02), vec3(.29, .18, .23), IR_WOOD, hit);
+        roomBox(ray, vec3(w * .30, .17, d * .90), vec3(.27, .17, .24), IR_WOOD, hit);
+        roomCylinder(ray, vec3(w * .12, .92, d * .30), .015, .90, IR_METAL, hit);
+    } else {
+        // Open-plan kitchen: back run of units, a breakfast island with stools and a small table.
+        roomBox(ray, vec3(w * .50, .47, d - .37), vec3(w * .42, .46, .34), IR_CABINET, hit);
+        roomBox(ray, vec3(w * .50, .96, d - .37), vec3(w * .43, .035, .35), IR_WOOD, hit);
+        roomBox(ray, vec3(w * .38, 1.94, d - .21), vec3(w * .26, .36, .18), IR_CABINET, hit);
+        float ix = w * .56, iz = d * .56, hw = min(1.25, w * .27);
+        roomBox(ray, vec3(ix, .47, iz), vec3(hw, .46, .38), IR_CABINET, hit);
+        roomBox(ray, vec3(ix, .965, iz - .03), vec3(hw + .04, .035, .46), IR_WOOD, hit);
+        for (int i = 0; i < 3; ++i)
+            roomStool(ray, vec2(ix + (float(i) - 1.0) * hw * .62, iz - .72), .66, hit);
+        roomTable(ray, vec2(w * .18, d * .26), vec2(.33, .33), .73, hit);
+        roomChair(ray, vec2(w * .18, d * .26 + .62), vec2(0.0, 1.0), false, hit);
+        roomPlant(ray, vec2(w - .45, d * .30), .95, hit);
     }
 }
 
@@ -286,19 +311,6 @@ void shopFurniture(RoomRay ray, vec3 s, int kind, vec4 h, inout RoomHit hit) {
     }
 }
 
-void interiorFurniture(RoomRay ray, vec3 size, int kind, vec4 h, inout RoomHit hit) {
-    // Very narrow residual suites stay usable, with a cabinet rather than clipped
-    // full-size furniture. Normal suites have a bounded, deterministic layout.
-    if (size.x < (kind < 5 ? 3.6 : 2.7) || size.z < 3.1) {
-        roomBox(ray, vec3(size.x * .5, .55, size.z - .25),
-                vec3(size.x * .33, .54, .22), IR_CABINET, hit);
-    } else if (kind == 5) officeFurniture(ray, size, h, hit);
-    else if (kind == 6) homeFurniture(ray, size, h, hit);
-    else shopFurniture(ray, size, kind, h, hit);
-    if (kind == 0 || kind == 6) {
-        vec3 a, b; interiorLamps(size, kind, h, a, b);
-        roomPendant(ray, a, size.y, hit);
-        roomPendant(ray, b, size.y, hit);
-    }
-}
+// interiorFurniture() now lives in interior_stores.py, after the commercial and
+// hotel layouts it dispatches to.
 """

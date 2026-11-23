@@ -201,13 +201,13 @@ void main() {
         mat2 dS = mat2(dUV[0] * vec2(fpW, 1.), dUV[1] * vec2(fpW, 1.));
         float detW = dW[0][0] * dW[1][1] - dW[1][0] * dW[0][1];
         mat2 J = abs(detW) > 1e-9 ? dS * inverse(dW) : mat2(1.0);
-        sf_concrete(sp, J, wp, dW, 1.5, dist, fw, albedo, rough, grad);
+        sf_concrete(sp, J, wp, dW, vec2(min(fpW, 1.4), 1.75), dist, fw, albedo, rough, grad);
 
         // Restrained edge grime, not a bright white outline around every slab.
         float edgeM = min(vUV.x, 1. - vUV.x) * fpW;
-        albedo *= 1. - .065 * (1. - smoothstep(.035, .12 + fw, edgeM));
+        albedo *= 1.-.15*(1.-smoothstep(.035, .32+fw, edgeM));
 
-        glossK = 0.020;
+        glossK = 0.006;
         paving = 1.0;
     } else {
         float mat = vColor.r;  // 1 grass, 2 asphalt, 3 concrete, 4 dirt, 5 urban, 6 seabed
@@ -222,8 +222,8 @@ void main() {
             glossK = 0.004;
             paving = 1.0;
         } else if (mat < 3.5) {
-            sf_concrete(wp, mat2(1.0), wp, dW, 1.8, dist, fw, albedo, rough, grad);
-            glossK = 0.020;
+            sf_concrete(wp, mat2(1.0), wp, dW, vec2(1.8, 2.1), dist, fw, albedo, rough, grad);
+            glossK = 0.006;
             paving = 1.0;
         } else if (mat < 4.5) {
             sf_dirt(wp, dW, fw, albedo, grad);
@@ -231,9 +231,22 @@ void main() {
             glossK = 0.03;
         } else if (mat > 6.5 && mat < 7.5) {
             // raised concrete footway (explicit 3D slab from urban.py)
-            sf_concrete(wp, mat2(1.0), wp, dW, 1.8, dist, fw, albedo, rough, grad);
-            glossK = 0.020;
+            vec2 sp = vStyle.y > .5 ? vUV : wp;
+            mat2 dS = vStyle.y > .5 ? dUV : dW;
+            float detW = dW[0][0]*dW[1][1]-dW[1][0]*dW[0][1];
+            mat2 J = abs(detW)>1e-9 ? dS*inverse(dW) : mat2(1.);
+            sf_concrete(sp, J, wp, dW, vec2(1.075, 1.75), dist, fw, albedo, rough, grad);
+            if (vStyle.y > .5) albedo *= 1.-.17*(1.-smoothstep(.04, .36+fw, sp.x));
+            glossK = 0.006;
             paving = 1.0;
+        } else if (mat >= 7.5 && mat < 7.8) {
+            // Explicit curb faces must not fall through to the seabed palette.
+            // vUV is already metric (arc, height), so its derivative is the footprint.
+            float curbFW = max(length(dUV[0]), length(dUV[1]));
+            sf_curb(vUV, dUV, curbFW, albedo, grad);
+            rough = .94;
+            glossK = .003;
+            paving = 1.;
         } else if (mat < 5.5) {
             sf_urban(wp, dW, fw, albedo, grad);
             rough = .90;
@@ -280,7 +293,8 @@ void main() {
     // `N` stays the smooth normal: it feeds the SSR material buffer, where pixel-scale bump
     // would only make reflections noisy.  Puddles are flat water, so they erase the bump.
     float bumpFade = (1.0 - smoothstep(30.0, 160.0, dist)) * min(det, 1.0) * (1.0 - puddle);
-    vec3 Tg = normalize(vec3(1.0, 0.0, 0.0) - N * N.x);
+    vec3 axis = abs(N.x) < .9 ? vec3(1., 0., 0.) : vec3(0., 1., 0.);
+    vec3 Tg = normalize(axis-N*dot(axis, N));
     vec3 Bg = cross(N, Tg);
     vec3 Nd = normalize(N - (Tg * grad.x + Bg * grad.y) * bumpFade);
 

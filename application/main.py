@@ -69,8 +69,8 @@ def main():
     g.add_argument("--no-prefetch", action="store_true")
     g.add_argument("--no-mesh-cache", action="store_true")
     g.add_argument("--no-process-pool", action="store_true")
-    g.add_argument("--no-terrain", action="store_true",
-                   help="flat ground (skip elevation tiles)")
+    # Older shortcuts still work; ground is always flat now.
+    g.add_argument("--no-terrain", action="store_true", help=argparse.SUPPRESS)
     n = ap.add_argument_group("network")
     n.add_argument("--max-requests", type=int, default=3)
     n.add_argument("--min-interval", type=float, default=0.5)
@@ -142,17 +142,6 @@ def main():
         else:
             lat0, lon0, label = args.lat, args.lon, f"{args.lat:.4f}, {args.lon:.4f}"
         start = (lat0, lon0, label)
-
-    if args.no_terrain:
-        fetcher.terrain.enabled = False
-    elif start is not None:
-        try:
-            # Sea level is datum - terrain must not lift the water above the
-            # streets: a start point over water (a pier, a DEM water cell)
-            # would otherwise put sea_z above land and flood the city.
-            fetcher.terrain_datum = max(0.0, float(fetcher.terrain.height_at(start[0], start[1])))
-        except Exception:
-            fetcher.terrain_datum = 0.0
 
     App(fetcher, args.radius, cfg, demo_mesh, start, tuple(args.size),
         args.tile_url, not args.no_tile_invert, args.cache_dir,
