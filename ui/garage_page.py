@@ -393,15 +393,12 @@ class GaragePage(Page):
     def _call(self):
         host = self.menu.host
         if self.kind not in DRIVABLE_KINDS:
-            self.menu.sound("error")
             self._say("Buses and trucks can't be driven", False)
             return
         ok, msg = host.garage_spawn(self.kind, self.rgb, bool(getattr(host, "garage_enter", True)))
         if ok:
-            self.menu.sound("click")
             self.menu.resume()
         else:
-            self.menu.sound("error")
             self._say(msg, False)
 
     def _set_tab(self, i):
@@ -411,7 +408,6 @@ class GaragePage(Page):
             self.scroll = 0.0
             if self.kind not in self.kinds():
                 self.kind = self.kinds()[0]
-            self.menu.sound("click")
 
     def _move(self, dx, dy):
         kinds = self.kinds()
@@ -426,7 +422,6 @@ class GaragePage(Page):
         if j != i:
             self.kind = kinds[j]
             self._reveal = True
-            self.menu.sound("click")
 
     def key(self, ev, pg):
         k = ev.key
@@ -446,15 +441,12 @@ class GaragePage(Page):
         elif k == pg.K_c:
             back = getattr(ev, "mod", 0) & pg.KMOD_SHIFT
             self.color = (self.color + (-1 if back else 1)) % len(PALETTE)
-            self.menu.sound("click")
         elif k == pg.K_g:
             host.garage_enter = not bool(getattr(host, "garage_enter", True))
-            self.menu.sound("toggle", host.garage_enter)
         elif k in (pg.K_RETURN, pg.K_KP_ENTER, pg.K_SPACE):
             self._call()
         elif k == pg.K_DELETE and hasattr(host, "garage_count") and host.garage_count():
             host.garage_clear()
-            self.menu.sound("click")
             self._say("Removed your spawned vehicles", True)
         else:
             return False
@@ -484,18 +476,14 @@ class GaragePage(Page):
                 self._call()
             else:
                 self.kind = data
-                self.menu.sound("click")
         elif tag == "swatch":
             self.color = data
-            self.menu.sound("click")
         elif tag == "enter":
             host.garage_enter = not bool(getattr(host, "garage_enter", True))
-            self.menu.sound("toggle", host.garage_enter)
         elif tag == "call":
             self._call()
         elif tag == "clear":
             host.garage_clear()
-            self.menu.sound("click")
             self._say("Removed your spawned vehicles", True)
         return True
 

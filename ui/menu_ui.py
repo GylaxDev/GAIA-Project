@@ -8,7 +8,6 @@ Esc, Q/E) works everywhere and mirrors the mouse.
 
 The host (``App``) provides, duck-typed:
 
-    ui_sound                      click() / toggle(on) / open() / close() / error()
     menu_info()      -> dict      location, coords, time, weather, mode, vehicle, world, loading
     menu_resume()                 leave the menu and play
     menu_open_map(), menu_search(), menu_travel(index), menu_quit()
@@ -109,11 +108,6 @@ class Page:
         hit = self.hits.at(pos)
         return hit is not None and hit[0] not in ("bg", "panel")
 
-    # helpers -------------------------------------------------------------
-    def click(self):
-        self.menu.sound("click")
-
-
 # ------------------------------------------------------------------ confirm
 class ConfirmDialog:
     def __init__(self, title, message, yes="Quit", no="Cancel", danger=True, on_yes=None):
@@ -150,7 +144,6 @@ class ConfirmDialog:
         k = ev.key
         if k in (pg.K_LEFT, pg.K_RIGHT, pg.K_TAB, pg.K_UP, pg.K_DOWN):
             self.focus ^= 1
-            menu.sound("click")
         elif k in (pg.K_RETURN, pg.K_KP_ENTER, pg.K_SPACE):
             self._finish(menu, self.focus == 0)
         elif k in (pg.K_ESCAPE, pg.K_n):
@@ -173,7 +166,6 @@ class ConfirmDialog:
 
     def _finish(self, menu, yes):
         menu.confirm = None
-        menu.sound("click")
         if yes and self.on_yes is not None:
             self.on_yes()
 
@@ -210,21 +202,12 @@ class MenuSystem:
     def add_page(self, name, page):
         self.pages[name] = page
 
-    def sound(self, name, *args):
-        snd = getattr(self.host, "ui_sound", None)
-        fn = getattr(snd, name, None) if snd is not None else None
-        if fn is not None:
-            fn(*args)
-
     def open(self, page="main", *, title=None):
         if title is not None:
             self.title = bool(title)
-        was_open = self.is_open
         self.page, self.stack, self.confirm, self.t = page, [], None, 0.0
         self.pressed = False
         self.current.on_open()
-        if not was_open:
-            self.sound("open")
 
     def go(self, page):
         if page not in self.pages:
@@ -233,13 +216,11 @@ class MenuSystem:
             self.stack.append(self.page)
         self.page, self.t, self.pressed = page, 0.0, False
         self.current.on_open()
-        self.sound("click")
 
     def back(self):
         if self.stack:
             self.page, self.t, self.pressed = self.stack.pop(), 0.0, False
             self.current.on_open()
-            self.sound("close")
         elif self.page == "main" and self.title:
             self.ask_quit()
         else:
@@ -250,12 +231,10 @@ class MenuSystem:
             return
         self.page, self.stack, self.confirm, self.pressed = None, [], None, False
         self.store.save()
-        self.sound("close")
 
     def ask_quit(self):
         self.confirm = ConfirmDialog(f"Leave {APP_NAME}?", "Your settings are saved automatically. See you soon!",
                                      yes="Quit", no="Keep playing", on_yes=self.host.menu_quit)
-        self.sound("open")
 
     def resume(self):
         self.title = False
@@ -380,7 +359,7 @@ class MainPage(Page):
         ("resume", "Start exploring", "Jump into the city", "play"),
         ("garage", "Garage", "Spawn and drive any vehicle", "car"),
         ("travel", "Travel", "Visit a city or open the world map", "globe"),
-        ("settings", "Settings", "Graphics, camera, world, audio and more", "sliders"),
+        ("settings", "Settings", "Graphics, camera, world and more", "sliders"),
         ("controls", "Controls", "Keyboard and mouse reference", "keyboard"),
         ("about", "About", "Version, data sources and credits", "info"),
         ("quit", "Quit", f"Close {APP_NAME}", "power"),
@@ -521,7 +500,6 @@ class MainPage(Page):
 
     def _activate(self, ident):
         m = self.menu
-        m.sound("click")
         if ident == "resume":
             info = m.host.menu_info()
             if m.title and not info.get("world"):
@@ -561,8 +539,6 @@ class MainPage(Page):
             ident, enabled = items[self.focus][0], items[self.focus][4]
             if enabled:
                 self._activate(ident)
-            else:
-                self.menu.sound("error")
         elif k == pg.K_ESCAPE:
             self.menu.back()
         else:
@@ -575,7 +551,6 @@ class MainPage(Page):
             self.focus = (self.focus + step) % n
             if items[self.focus][4]:
                 break
-        self.menu.sound("click")
 
     def hover(self, pos):
         hit = self.hits.at(pos)
@@ -669,13 +644,11 @@ class TravelPage(Page):
                 ("Esc", "Back")]
 
     def _travel(self, i):
-        self.menu.sound("click")
         self.menu.title = False
         self.menu.close()
         self.menu.host.menu_travel(i)
 
     def _extra(self, idx):
-        self.menu.sound("click")
         self.menu.title = False
         self.menu.close()
         (self.menu.host.menu_open_map if idx == 0 else self.menu.host.menu_search)()
@@ -706,7 +679,6 @@ class TravelPage(Page):
             return False
         if f != self.focus:
             self.focus = f
-            self.menu.sound("click")
         return True
 
     def hover(self, pos):

@@ -13,7 +13,6 @@ CREDITS = (
     ("Terrain", "AWS Open Data elevation tiles", "Terrarium-encoded DEM, no key needed"),
     ("Stars", "HYG v4.1 star catalogue", "David Nash / Astronomy Nexus, CC BY-SA 4.0"),
     ("Typeface", "Inter", "The Inter Project Authors, SIL Open Font License 1.1"),
-    ("Engine sound", "Recorded V8 loops", "Baked from user-supplied recordings"),
 )
 
 
@@ -103,7 +102,6 @@ class AboutPage(Page):
 
     def _do(self, which):
         host = self.menu.host
-        self.menu.sound("click")
         if which == 0:
             if hasattr(host, "menu_show_log"):
                 host.menu_show_log()            # the log card is drawn above the menu
@@ -115,7 +113,6 @@ class AboutPage(Page):
         k = ev.key
         if k in (pg.K_LEFT, pg.K_RIGHT, pg.K_a, pg.K_d, pg.K_TAB):
             self.focus ^= 1
-            self.menu.sound("click")
         elif k in (pg.K_RETURN, pg.K_KP_ENTER, pg.K_SPACE):
             self._do(self.focus)
         else:

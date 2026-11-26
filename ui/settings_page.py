@@ -57,18 +57,16 @@ class SettingsPage(Page):
     def select(self, cat_id):
         for i, c in enumerate(self.store.categories):
             if c.id == cat_id:
-                self._set_category(i, quiet=True)
+                self._set_category(i)
                 return
 
-    def _set_category(self, index, quiet=False):
+    def _set_category(self, index):
         n = len(self.store.categories)
         index %= max(1, n)
         if index != self.cat:
             self.cat = index
             self.focus = 0
             self._reveal = None
-            if not quiet:
-                self.menu.sound("click")
         self.drag_id = None
 
     def _interactive(self):
@@ -327,12 +325,8 @@ class SettingsPage(Page):
     def prompts(self):
         return [("↑ ↓", "Select"), ("← →", "Adjust"), ("Enter", "Toggle"), ("Tab", "Next page"), ("Esc", "Back")]
 
-    def _commit(self, s, value, sound=None):
+    def _commit(self, s, value):
         self.store.change(s, value)
-        if sound == "toggle":
-            self.menu.sound("toggle", bool(s.value()))
-        elif sound:
-            self.menu.sound(sound)
 
     def _nudge(self, s, direction):
         """Left / Right on the focused setting."""
@@ -342,20 +336,19 @@ class SettingsPage(Page):
         elif s.kind == "choice" and s.choices:
             i = max(0, min(len(s.choices) - 1, s.choice_index() + direction))
             if i != s.choice_index():
-                self._commit(s, s.choices[i][0], "click")
+                self._commit(s, s.choices[i][0])
         elif s.kind == "toggle":
             want = direction > 0
             if bool(s.value()) != want:
-                self._commit(s, want, "toggle")
+                self._commit(s, want)
 
     def _activate(self, s):
         if s.kind == "toggle":
-            self._commit(s, not bool(s.value()), "toggle")
+            self._commit(s, not bool(s.value()))
         elif s.kind == "choice" and s.choices:
             i = (s.choice_index() + 1) % len(s.choices)
-            self._commit(s, s.choices[i][0], "click")
+            self._commit(s, s.choices[i][0])
         elif s.kind == "action" and s.action is not None:
-            self.menu.sound("click")
             s.action()
 
     def key(self, ev, pg):
@@ -367,11 +360,9 @@ class SettingsPage(Page):
         elif k in (pg.K_DOWN, pg.K_s) and rows:
             self.focus = min(len(rows) - 1, self.focus + 1)
             self._reveal = rows[self.focus].id
-            self.menu.sound("click")
         elif k in (pg.K_UP, pg.K_w) and rows:
             self.focus = max(0, self.focus - 1)
             self._reveal = rows[self.focus].id
-            self.menu.sound("click")
         elif k in (pg.K_LEFT, pg.K_a) and rows:
             self._nudge(rows[min(self.focus, len(rows) - 1)], -1)
         elif k in (pg.K_RIGHT, pg.K_d) and rows:
@@ -431,17 +422,15 @@ class SettingsPage(Page):
         elif tag == "seg":
             s, i = data
             if i != s.choice_index():
-                self._commit(s, s.choices[i][0], "click")
+                self._commit(s, s.choices[i][0])
         elif tag == "step":
             s, d = data
             i = (s.choice_index() + d) % len(s.choices)
-            self._commit(s, s.choices[i][0], "click")
+            self._commit(s, s.choices[i][0])
         elif tag == "action":
-            self.menu.sound("click")
             data.action()
         elif tag == "reset":
             self.store.reset_category(self.category)
-            self.menu.sound("click")
         elif tag == "row":
             pass
         self.store.save()

@@ -2,7 +2,7 @@
 
 Both share an animated "living Earth" backdrop: a slowly turning globe over a soft, colourful
 aurora and a twinkling star field, so the app never opens onto a blank window.  ``draw_boot``
-is used while the window, shaders, audio and panels are created; ``draw_travel`` while the
+is used while the window, shaders and panels are created; ``draw_travel`` while the
 first city streams in.  They only draw: the host supplies progress, step states and log lines.
 """
 from __future__ import annotations

@@ -151,7 +151,6 @@ class MenuHost:
     def open_garage(self):
         if self.world is None or self.camera is None:
             self._say("Load a city first, then open the Garage", 3.0)
-            self.ui_sound.error()
             return
         if self.loading:
             self._say("Wait for the destination to load", 3.0)
@@ -185,9 +184,6 @@ class MenuHost:
         driver = self.driving
         if driver.active:
             driver.leave()
-            audio = getattr(self, "audio", None)
-            if audio is not None:
-                audio.leave()
 
     def garage_spawn(self, kind, rgb, enter=True):
         """Place a new car on a clear road near the camera.  Returns ``(ok, message)``."""
@@ -214,9 +210,6 @@ class MenuHost:
             if self.walker.active:
                 self._end_walking()
             driver.enter(car)
-            audio = getattr(self, "audio", None)
-            if audio is not None:
-                audio.enter()
             cam.follow_vehicle(car.position, car.heading, snap=True, height=HEIGHTS[car.kind],
                                length=LENGTHS[car.kind])
             self.vel[:] = 0.0

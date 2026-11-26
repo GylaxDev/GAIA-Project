@@ -17,7 +17,7 @@ from . import icon_raster
 ALIASES = {
     "play": "play", "car": "car", "globe": "globe", "pin": "map-pin", "sliders": "sliders-horizontal",
     "keyboard": "keyboard", "info": "info", "power": "power", "monitor": "monitor", "sparkle": "sparkles",
-    "camera": "camera", "clock": "clock", "crowd": "users", "speaker": "volume-2",
+    "camera": "camera", "clock": "clock", "crowd": "users",
     "layout": "layout-dashboard", "terminal": "square-terminal", "chevron_l": "chevron-left",
     "chevron_r": "chevron-right", "chevron_d": "chevron-down", "close": "x", "check": "check",
     "lock": "lock", "reset": "rotate-ccw", "drop": "droplet", "trash": "trash-2", "bolt": "zap",

@@ -15,9 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from ..core import telemetry as tm
-from ..audio.silent import SilentAudio
 from ..vehicles.skidmarks import SkidMarks
-from ..audio.uisound import UiSound
 from ..core.camera import Camera
 from ..vehicles.driving import DrivingController, DriveControls, PlayerCar, vehicle_obstacles
 from types import SimpleNamespace
@@ -691,11 +689,7 @@ class App(MenuHost):
         self.ui = Overlay2D()               # first, so the boot screen can draw during the slow steps
         self.ui.scale = self.ui_scale
         self._boot(0.08, "Starting up")
-        # Sound was removed from the game: the silent backend keeps the engine,
-        # tyre, impact and interface-sound call sites inert and device-free.
-        self.audio = SilentAudio()
         self.skidmarks = SkidMarks()
-        self.ui_sound = UiSound(None)
         self._boot(0.22, "Preparing the renderer")
         self.renderer = Renderer(w, h, shadow_size, shadows, vehicle_shadow_size=vehicle_shadow_size,
                                  near_shadow_size=near_shadow_size)
@@ -951,7 +945,6 @@ class App(MenuHost):
 
     def _travel_marker(self):
         if self.map.marker is None:
-            self.ui_sound.error()
             self._say("Click the map to pick a destination first")
         else:
             self._travel(*self.map.marker)
@@ -959,7 +952,6 @@ class App(MenuHost):
     def _ui_action(self, act):
         """A click that landed on the Apple-Maps chrome (sidebar, buttons, compass, zoom)."""
         ch, pg = self.chrome, self.pg
-        self.ui_sound.click()
         w, h = pg.display.get_window_size()
         if act.startswith("city:"):
             i = int(act[5:])
@@ -1249,8 +1241,6 @@ class App(MenuHost):
         if driver.active:
             parked = driver.car
             driver.leave()
-            audio = getattr(self, 'audio', None)
-            if audio is not None: audio.leave()
             if self._step_out_of(parked):
                 return
             cam.release()
@@ -1300,8 +1290,6 @@ class App(MenuHost):
         if on_foot:
             self._end_walking()                       # the chase camera takes over from the walk camera
         driver.enter(car)
-        audio = getattr(self, 'audio', None)
-        if audio is not None: audio.enter()
         cam.follow_vehicle(car.position, car.heading, snap=True, height=HEIGHTS[car.kind],
                            length=LENGTHS[car.kind])
         self.vel[:] = 0.; self._vel_xy = self._vel_t = None
@@ -1517,18 +1505,6 @@ class App(MenuHost):
         elif self.skidmarks is not None:
             self.skidmarks.release()
 
-    def _update_audio(self, dt, active=True):
-        """Feed the driven car's state to the procedural sound effects."""
-        audio = getattr(self, 'audio', None)
-        if audio is None:
-            return
-        driver = self.driving
-        paused = (not driver.active or self.mode != "scene" or not active
-                  or self.typing or self.menu.is_open or self.show_log or self.loading or self._picker_open())
-        audio.update(dt, driver.car, active=not paused, blocked=driver.blocked,
-                     throttle=driver.controls.throttle, wetness=self.weather.wetness,
-                     handbrake=bool(driver.controls.brake))
-
     def _focus(self):
         """F: swoop onto the building or vehicle under the cursor, or release."""
         cam = self.camera
@@ -1631,7 +1607,6 @@ class App(MenuHost):
                     self.show_media = not getattr(self, 'show_media', True)
                     self._say(f"Now playing {'shown' if self.show_media else 'hidden'}", 2.0)
             elif k == pg.K_m:
-                (self.ui_sound.open if self.mode == "scene" else self.ui_sound.close)()
                 if self.mode == "scene": self._open_map()
                 elif self.camera: self.mode = "scene"
             elif k == pg.K_g and self.mode == "map":
@@ -1728,9 +1703,6 @@ class App(MenuHost):
                                                  h / self.ui_scale, self.renderer)
                     if action == "close":
                         self.show_help = False
-                        self.ui_sound.close()
-                    elif action:
-                        self.ui_sound.toggle(bool(getattr(self.renderer, 'speed_fov', True)) if action == "fov_toggle" else True)
                 return True
             if getattr(self, '_mouse_captured', False):
                 self.map.press_ui = False          # the hidden cursor must not "press" UI under it
@@ -2251,7 +2223,6 @@ class App(MenuHost):
             self._poll_background()
             self._update_driving(raw, active)
             self._update_walking(raw, active)
-            self._update_audio(raw, active)
             self._update_world(dt)
             self._update_crowd(dt)
             if self.mode == "map":
@@ -2314,8 +2285,6 @@ class App(MenuHost):
             if wld is not None: wld.close()
         if getattr(self, 'media', None) is not None:
             self.media.close()
-        if getattr(self, 'audio', None) is not None:
-            self.audio.close()
         self.renderer.spill.close()
         self.renderer.release_vegetation()
         self.renderer.release_billboards()
