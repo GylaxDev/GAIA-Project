@@ -345,14 +345,9 @@ void main() {
     }
     lit += (albedo / 3.14159265 * sDiff + sSpec * glossK) * uNightFactor;
 
-    // wet-asphalt reflection of billboards / neon signage
+    // wet-asphalt reflection of neon signage (billboards no longer cast light)
     vec3 neon = neonSpill(vWorld, Nd, V);
     lit += neon * (albedo * 0.55 + glossK * 0.35) * uNightFactor;
-    // LED screens: real area emitters, so the ground and paving in front of a billboard are lit
-    // by it (a coloured pool that follows the screen) and nothing behind or beside it is.
-    vec3 screenSpec;
-    vec3 screenE = neonScreenSpill(vWorld, Nd, V, screenSpec);
-    lit += (albedo / 3.14159265 * screenE + screenSpec * glossK) * uNightFactor;
 
     // Water pockets reflect the same cloud deck as open water, while ordinary
     // wet aggregate keeps a rough sheen instead of turning the whole street into a mirror.
@@ -362,7 +357,7 @@ void main() {
         lit = mix(lit, wetRefl, puddle * fresnel);
     }
     lit += uAmbColor * wet * paving * (1. - puddle) * fresnel * .10;
-    lit += (neon + screenE) * puddle * 0.06 * uNightFactor;
+    lit += neon * puddle * 0.06 * uNightFactor;
 
     lit = max(lit, albedo * uAmbColor * 0.04);
 

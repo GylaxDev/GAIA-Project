@@ -694,7 +694,6 @@ class Renderer:
 
         self._neon_pos = np.zeros((48, 3), np.float32)
         self._neon_col = np.zeros((48, 3), np.float32)
-        self._neon_scr = np.zeros((48, 4), np.float32)   # screens: normal xy, half width, half height
         self._neon_n = 0
         # Night neon sits at ~3-4 exposed HDR units, so the old 3.0 threshold (knee from 2.4) let almost
         # nothing bloom.  1.5 lets signs and lamps glow; strength is kept moderate.
@@ -2271,30 +2270,16 @@ class Renderer:
             pools = [c.neon_cpu for c in chunks
                      if c.neon_cpu is not None and len(c.neon_cpu)]
             n = 0
-            self._neon_pos[:] = 0.0; self._neon_col[:] = 0.0; self._neon_scr[:] = 0.0
+            self._neon_pos[:] = 0.0
+            self._neon_col[:] = 0.0
             if pools:
                 allv = np.vstack(pools)
                 tx, ty = float(cam.target[0]), float(cam.target[1])
-                tz = float(cam.target[2]) if len(cam.target) > 2 else 0.0
-                # Rows: xyz, rgb, then (screens only) normal xyz, half width, half height.
-                width = allv.shape[1]
-                nrm = allv[:, 6:9] if width >= 11 else np.zeros((len(allv), 3), np.float32)
-                ext = allv[:, 9:11] if width >= 11 else np.zeros((len(allv), 2), np.float32)
-                is_screen = ((nrm[:, :2] ** 2).sum(axis=1) > .25) & (ext[:, 0] > 0.) & (ext[:, 1] > 0.)
                 d2 = (allv[:, 0] - tx) ** 2 + (allv[:, 1] - ty) ** 2
-                # Big LED screens outrank small signs: shrink their effective distance by
-                # their strength so a Times Square block is not crowded out by vertex samples.
+                # Big signs outrank small ones: shrink their effective distance by
+                # their strength so a busy block is not crowded out by weak samples.
                 strength = np.maximum(allv[:, 3:6].max(axis=1), 1.0)
-                # A screen only lights what is in front of its glass, so one that faces away
-                # from the view target must not take a slot from one that faces it.
-                facing = np.ones(len(allv), np.float64)
-                if is_screen.any():
-                    glass = allv[is_screen, 0:3] - nrm[is_screen] * 3.0   # SCREEN_LIGHT_SETBACK
-                    to_t = np.stack((tx - glass[:, 0], ty - glass[:, 1], tz - glass[:, 2]), 1)
-                    dist = np.maximum(np.linalg.norm(to_t, axis=1), 1.0)
-                    cos_e = np.clip((to_t * nrm[is_screen]).sum(axis=1) / dist, 0., 1.)
-                    facing[is_screen] = .15 + cos_e
-                d2 = d2 / (strength * facing) ** 2
+                d2 = d2 / strength ** 2
                 k = min(48, len(allv))
                 idx = (np.argpartition(d2, k - 1)[:k] if len(allv) > k
                        else np.arange(len(allv)))
@@ -2304,24 +2289,12 @@ class Renderer:
                 # saturated pink / cyan: keeps the street lit without coloured light blobs.
                 lum = (col @ np.array([.2126, .7152, .0722], np.float32))[:, None]
                 warm = lum * np.array([1., .86, .66], np.float32)
-                scr = is_screen[idx][:, None]
-                # Screens keep far more of their ad colour, so the pool of light on the street
-                # and on the opposite facades is visibly the colour of what is on the screen.
-                col = np.where(scr, col * .45 + warm * .55, col * .22 + warm * .78)
-                self._neon_col[:k] = col
-                sel = idx[is_screen[idx]]
-                rows = np.flatnonzero(is_screen[idx])
-                if len(sel):
-                    xy = nrm[sel, :2]
-                    xy = xy / np.maximum(np.linalg.norm(xy, axis=1, keepdims=True), 1e-6)
-                    self._neon_scr[rows, 0:2] = xy
-                    self._neon_scr[rows, 2:4] = ext[sel]
+                self._neon_col[:k] = col * .22 + warm * .78
                 n = int(k)
             self._neon_n = n
         n = self._neon_n
         gl.glUniform3fv(self._loc(p, "uNeonPos[0]"), 48, self._neon_pos.ravel())
         gl.glUniform3fv(self._loc(p, "uNeonCol[0]"), 48, self._neon_col.ravel())
-        gl.glUniform4fv(self._loc(p, "uNeonScr[0]"), 48, self._neon_scr.ravel())
         self._int(p, "uNumNeon", n)
 
     def _draw_precip(self, cam, weather, sky, fog_near, fog_far, view, proj, eye):

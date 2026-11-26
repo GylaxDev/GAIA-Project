@@ -28,6 +28,7 @@ from ..core.config import ACCENT
 from ..shaders import OVERLAY_VS, OVERLAY_FS, OVERLAY_BLUR_FS
 
 FONT_DIR = Path(__file__).resolve().parents[1] / "assets" / "fonts"
+ICON_DIR = Path(__file__).resolve().parents[1] / "assets" / "icons"
 FONT_FILES = {"regular": "Inter-Regular.ttf", "medium": "Inter-Medium.ttf",
               "semibold": "Inter-SemiBold.ttf", "bold": "Inter-Bold.ttf"}
 _FALLBACK_CHAIN = ("inter", "segoeui", "sfprotext", "helveticaneue", "arial", "dejavusans")
@@ -92,6 +93,9 @@ class Overlay2D:
         gl.glDisableVertexAttribArray(2)
         gl.glBindVertexArray(0)
         self.fonts, self.text_cache = {}, {}
+        self._icon_cache = {}          # (name, device px, stroke, angle) -> (texture, px)
+        self._brand_cache = {}         # device px -> texture of the GAIA app icon
+        self._brand_src = {}           # source PNGs by pixel size (loaded once)
         self.font_name = None          # optional system-font override
         self.scale = 1.0               # logical -> physical pixel factor (HiDPI)
         self.lw, self.lh = 1280.0, 800.0
@@ -645,6 +649,83 @@ class Overlay2D:
         """Text vertically centred on ``cy`` (Inter's caps sit on the box centre)."""
         h = self.measure("Ag", size, bold, weight)[1]
         return self.text(s, x, cy - h / 2, size, color, anchor, bold=bold, weight=weight, halo=halo)
+
+
+    # ---------------------------------------------------------------- icons
+    def icon(self, name, cx, cy, size, color=(1, 1, 1, 1), angle=0.0, stroke=None):
+        """Draw a Lucide icon centred on logical (cx, cy), ``size`` logical pixels tall.
+
+        The glyph is rasterised once at the exact *device* size (so it is never
+        resampled, like the text) and tinted with ``color``.  ``angle`` rotates it
+        in degrees (cached per 5 degrees; used for wind arrows), ``stroke`` overrides
+        the logical stroke width.  Returns False when ``name`` is not bundled.
+        """
+        from ..ui import icon_raster
+        if not icon_raster.has(name):
+            return False
+        S = self.scale
+        px = max(8, int(round(size * S)))
+        sw = icon_raster.stroke_width(size) if stroke is None else float(stroke)
+        swq = round(sw * S * 4.0) / 4.0
+        aq = (int(round(float(angle) / 5.0)) * 5) % 360
+        key = (name, px, swq, aq)
+        hit = self._icon_cache.pop(key, None)
+        if hit is None:
+            if len(self._icon_cache) >= 700:
+                for k in list(self._icon_cache)[:120]:
+                    self.gl.glDeleteTextures([self._icon_cache.pop(k)[0]])
+            mask = icon_raster.rasterize(name, px, swq, aq)
+            rgba = np.empty((px, px, 4), np.uint8)
+            rgba[..., :3] = 255
+            rgba[..., 3] = mask
+            hit = (make_texture(self.gl, px, px, np.ascontiguousarray(rgba)), px)
+        self._icon_cache[key] = hit
+        tex, px = hit
+        lw = px / S
+        x = round(cx * S - px / 2.0) / S
+        y = round(cy * S - px / 2.0) / S
+        self.gl.glBindTexture(self.gl.GL_TEXTURE_2D, tex)
+        self._set(10, color)
+        self._submit(_quad(x, y, lw, lw), self.gl.GL_TRIANGLES)
+        return True
+
+    # ---------------------------------------------------------------- brand
+    def _brand_source(self, px):
+        """The bundled GAIA icon PNG closest to (and not smaller than) ``px`` pixels."""
+        if not self._brand_src:
+            for f in sorted(ICON_DIR.glob("gaia_*.png")) + [ICON_DIR / "gaia.png"]:
+                try:
+                    surf = self.pg.image.load(str(f)).convert_alpha()
+                except Exception:
+                    continue
+                self._brand_src[surf.get_width()] = surf
+        if not self._brand_src:
+            return None
+        sizes = sorted(self._brand_src)
+        pick = next((s for s in sizes if s >= px), sizes[-1])
+        return self._brand_src[pick]
+
+    def brand(self, x, y, size, alpha=1.0):
+        """Draw the GAIA app icon with its top-left at logical (x, y), ``size`` logical px wide.
+
+        Returns False (and draws nothing) when the icon file is not bundled, so the
+        caller can fall back to a drawn mark.
+        """
+        S = self.scale
+        px = max(8, int(round(size * S)))
+        tex = self._brand_cache.get(px)
+        if tex is None:
+            src = self._brand_source(px)
+            if src is None:
+                return False
+            surf = src if src.get_width() == px else self.pg.transform.smoothscale(src, (px, px))
+            tex = make_texture(self.gl, px, px, self.pg.image.tostring(surf, "RGBA", False))
+            if len(self._brand_cache) > 12:
+                self.gl.glDeleteTextures([self._brand_cache.pop(next(iter(self._brand_cache)))])
+            self._brand_cache[px] = tex
+        lw = px / S
+        self.image(tex, round(x * S) / S, round(y * S) / S, lw, lw, radius=lw / 2.0, alpha=alpha)
+        return True
 
 
 class TileCache:

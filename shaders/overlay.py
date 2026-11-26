@@ -40,7 +40,8 @@ in vec2 vPos;
 in vec4 vColor;
 uniform int uMode;          // 0 solid, 1 glyph, 2 map tile, 3 vertical gradient,
                             // 4 rounded box (+ border), 5 soft shadow, 6 anti-aliased line,
-                            // 7 rounded textured image, 8 coloured triangles
+                            // 7 rounded textured image, 8 coloured triangles,
+                            // 10 icon (alpha mask tinted by uColor, no text curve)
 uniform vec4 uColor;        // fill (top) colour / text colour / line colour
 uniform vec4 uColor2;       // fill (bottom) colour for gradients and boxes
 uniform vec4 uBorder;       // box border colour
@@ -162,6 +163,7 @@ void main() {
         return;
     }
     vec4 t = texture(uTex, vUV);
+    if (uMode == 10) { FragColor = vec4(uColor.rgb, uColor.a * t.a); return; }
     if (uMode == 1) {
         // light-on-dark text looks thin with plain coverage; a mild curve restores weight
         FragColor = vec4(uColor.rgb, uColor.a * pow(t.a, 0.80));

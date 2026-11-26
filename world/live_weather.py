@@ -19,6 +19,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 API = "https://api.open-meteo.com/v1/forecast"
+AIR_API = "https://air-quality-api.open-meteo.com/v1/air-quality"
 UA = {"User-Agent": "osm3d-viewer/1.0 (educational PyOpenGL demo)"}
 
 # WMO 4677 present-weather codes: (text, kind)
@@ -135,9 +136,78 @@ def state_from_current(cur):
         "visibility_km": visibility / 1000.0,
         "is_day": bool(cur.get("is_day", 1)),
         "precipitation_mm": precip,
+        "cloud_pct": float(cur.get("cloud_cover", 0) or 0),
+        "gust_kmh": _num(cur.get("wind_gusts_10m")),
+        "pressure_hpa": _num(cur.get("pressure_msl")),
+        "dew_c": _num(cur.get("dew_point_2m")),
+        "uv": _num(cur.get("uv_index")),
         "time": cur.get("time"),
         "stamp": time.time(),
     }
+
+
+def _num(v):
+    """A float, or None for a missing / non-numeric / non-finite value."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _hour_floor(stamp):
+    """``"2026-11-26T14:35"`` -> ``"2026-11-26T14:00"`` (Open-Meteo local ISO strings)."""
+    return str(stamp or "")[:13] + ":00"
+
+
+def enrich_state(state, payload, air=None, hours=12):
+    """Add the detail the weather card shows: today's range, sun times, hourly outlook, air quality.
+
+    ``payload`` is the full forecast response (``current``, ``daily``, ``hourly``), ``air`` the optional
+    air-quality response.  Every field is optional: whatever the API did not return stays ``None`` /
+    empty, and the card simply omits it.  Returns ``state`` (mutated).
+    """
+    daily = (payload or {}).get("daily") or {}
+
+    def first(key):
+        seq = daily.get(key) or []
+        return seq[0] if seq else None
+
+    state["temp_max_c"] = _num(first("temperature_2m_max"))
+    state["temp_min_c"] = _num(first("temperature_2m_min"))
+    state["sunrise"] = first("sunrise")
+    state["sunset"] = first("sunset")
+    state["pop_max"] = _num(first("precipitation_probability_max"))
+    state["uv_max"] = _num(first("uv_index_max"))
+    state["precip_sum_mm"] = _num(first("precipitation_sum"))
+
+    hourly = (payload or {}).get("hourly") or {}
+    times = hourly.get("time") or []
+    start = 0
+    now = _hour_floor((payload or {}).get("current", {}).get("time") or state.get("time"))
+    for i, t in enumerate(times):
+        if str(t) >= now:
+            start = i
+            break
+    rows = []
+    for i in range(start, min(len(times), start + int(hours) + 1)):
+        def at(key):
+            seq = hourly.get(key) or []
+            return seq[i] if i < len(seq) else None
+        code = at("weather_code")
+        text, kind = describe(code if code is not None else 3)
+        rows.append({
+            "time": times[i], "temp_c": _num(at("temperature_2m")), "pop": _num(at("precipitation_probability")),
+            "code": None if code is None else int(code), "kind": kind, "text": text,
+            "is_day": bool(at("is_day") if at("is_day") is not None else 1),
+        })
+    state["hourly"] = rows
+
+    cur = (air or {}).get("current") or {}
+    state["aqi"] = _num(cur.get("us_aqi"))
+    state["pm25"] = _num(cur.get("pm2_5"))
+    state["pm10"] = _num(cur.get("pm10"))
+    return state
 
 
 class LiveWeather:
@@ -194,12 +264,28 @@ class LiveWeather:
             return self._latlon
 
     # --------------------------------------------------------------- worker
+    @staticmethod
+    def _fetch_air(lat, lon):
+        """Best-effort air quality; the weather card works fine without it."""
+        params = {"latitude": f"{lat:.5f}", "longitude": f"{lon:.5f}",
+                  "current": "us_aqi,pm2_5,pm10", "timezone": "auto"}
+        try:
+            req = urllib.request.Request(AIR_API + "?" + urllib.parse.urlencode(params), headers=UA)
+            with urllib.request.urlopen(req, timeout=8) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return None
+
     def _fetch(self, lat, lon):
         params = {
             "latitude": f"{lat:.5f}", "longitude": f"{lon:.5f}",
             "current": "temperature_2m,relative_humidity_2m,apparent_temperature,is_day,"
                        "precipitation,rain,snowfall,weather_code,cloud_cover,wind_speed_10m,"
-                       "wind_direction_10m,visibility",
+                       "wind_direction_10m,visibility,wind_gusts_10m,pressure_msl,dew_point_2m,uv_index",
+            "daily": "temperature_2m_max,temperature_2m_min,sunrise,sunset,"
+                     "precipitation_probability_max,uv_index_max,precipitation_sum",
+            "hourly": "temperature_2m,precipitation_probability,weather_code,is_day",
+            "forecast_days": 2,
             "timezone": "auto", "wind_speed_unit": "kmh",
         }
         url = API + "?" + urllib.parse.urlencode(params)
@@ -213,6 +299,7 @@ class LiveWeather:
             state = state_from_current(cur)
             # The clock follows the observed place, so carry its UTC offset.
             state["utc_offset"] = utc_offset(payload, cur)
+            enrich_state(state, payload, self._fetch_air(lat, lon))
             with self._lock:
                 self._state, self._error = state, None
         except Exception as exc:                    # offline, rate-limited, malformed: keep the last good state

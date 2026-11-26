@@ -14,9 +14,10 @@ from __future__ import annotations
 import math
 import time
 
+from . import icons, weather_ui
 from . import theme as T
 from ..core.config import ACCENT
-from .ui_kit import (_in, _key_tokens, caps, caps_w, activity, alpha, button, chip, glass, icon_tile, inside, keycaps, mix, progress,
+from .ui_kit import (_in, _key_tokens, caps, caps_w, activity, alpha, button, chip, glass, icon_tile, inside, keycaps, logo_mark, mix, progress,
                      search_field, spring, surface)
 
 # Re-export for backward compatibility
@@ -49,6 +50,10 @@ class MapsChrome:
         self.sidebar_open = True
         self.guides_open = False
         self.navigation_active = False
+        self.weather_open = False          # detailed weather card (3D screen)
+        self.weather_units = weather_ui.Units(False)
+        self._wx_pill = None               # last frame's pill rect, for hit testing
+        self._wx_hits = []                 # last frame's panel hit rects
         self._tip_name = None
         self._tip_t = 0.0
 
@@ -57,6 +62,11 @@ class MapsChrome:
         """Ordered list of (action, rect).  Earlier entries win hit tests."""
         out = []
         B, M = self.BTN, T.MARGIN
+        if mode != "map":
+            if self.weather_open:
+                out.extend(self._wx_hits)
+            if self._wx_pill is not None:
+                out.append(("weather", self._wx_pill))
         gx, gy = w - M - B, M
         out.append(("map", (gx, gy, B, B)))
         out.append(("locate", (gx, gy + B, B, B)))
@@ -105,80 +115,49 @@ class MapsChrome:
     def clickable(self, pos, w, h, mode, n_cities=0):
         """True over something that reacts to a click (for the hand cursor)."""
         act = self.hit(pos, w, h, mode, n_cities)
-        return act is not None and act != "sidebar_bg"
+        return act is not None and act not in ("sidebar_bg", "weather_panel")
 
     # ------------------------------------------------------------------ icons
+    # All glyphs are Lucide icons (see ``icons``); these wrappers keep the old call signatures.
     @staticmethod
     def icon_search(ui, cx, cy, s, col):
-        ui.ring(cx - s * 0.10, cy - s * 0.10, s * 0.34, 1.8, col)
-        ui.line(cx + s * 0.15, cy + s * 0.15, cx + s * 0.40, cy + s * 0.40, 2.0, col)
+        icons.draw(ui, "search", cx, cy, s, col)
 
     @staticmethod
     def icon_guides(ui, cx, cy, s, col):
-        q, g = s * 0.30, s * 0.07
-        for dx in (-1, 1):
-            for dy in (-1, 1):
-                x = cx + (g if dx > 0 else -g - q)
-                y = cy + (g if dy > 0 else -g - q)
-                ui.rrect(x, y, q, q, 3, col)
+        icons.draw(ui, "layout-grid", cx, cy, s, col)
 
     @staticmethod
     def icon_directions(ui, cx, cy, s, col):
-        ui.line(cx - s * 0.22, cy + s * 0.36, cx - s * 0.22, cy - s * 0.02, 2.0, col)
-        ui.line(cx - s * 0.22, cy - s * 0.02, cx + s * 0.10, cy - s * 0.02, 2.0, col)
-        ui.tri((cx + s * 0.08, cy - s * 0.26), (cx + s * 0.08, cy + s * 0.22),
-               (cx + s * 0.40, cy - s * 0.02), col)
+        icons.draw(ui, "corner-up-right", cx, cy, s, col)
 
     @staticmethod
     def icon_sidebar(ui, cx, cy, s, col):
-        ui.box(cx - s * 0.42, cy - s * 0.32, s * 0.84, s * 0.64, 3.0, None, col, bw=1.8)
-        ui.line(cx - s * 0.12, cy - s * 0.32, cx - s * 0.12, cy + s * 0.32, 1.8, col)
+        icons.draw(ui, "panel-left", cx, cy, s, col)
 
     @staticmethod
     def icon_map(ui, cx, cy, s, col):
-        a, b = s * 0.42, s * 0.14
-        top = [(cx - a, cy - s * 0.26), (cx - b, cy - s * 0.38), (cx + b, cy - s * 0.26), (cx + a, cy - s * 0.38)]
-        bot = [(cx - a, cy + s * 0.38), (cx - b, cy + s * 0.26), (cx + b, cy + s * 0.38), (cx + a, cy + s * 0.26)]
-        ui.outline_poly(top + list(reversed(bot)), 1.8, col)
-        ui.line(top[1][0], top[1][1], bot[1][0], bot[1][1], 1.6, col)
-        ui.line(top[2][0], top[2][1], bot[2][0], bot[2][1], 1.6, col)
+        icons.draw(ui, "map", cx, cy, s, col)
 
     @staticmethod
     def icon_locate(ui, cx, cy, s, col):
-        t = (cx + s * 0.34, cy - s * 0.34)
-        a = (cx - s * 0.30, cy + s * 0.10)
-        b = (cx - s * 0.10, cy + s * 0.30)
-        m = (cx - s * 0.08, cy + s * 0.08)
-        ui.tri(t, a, m, col)
-        ui.tri(t, m, b, col)
+        icons.draw(ui, "locate-fixed", cx, cy, s, col)
 
     @staticmethod
     def icon_fullscreen(ui, cx, cy, s, col, exit_=False):
-        d, k = s * 0.36, s * 0.18
-        for sx in (-1, 1):
-            for sy in (-1, 1):
-                px, py = cx + sx * d, cy + sy * d
-                ex = -sx if exit_ else sx
-                ey = -sy if exit_ else sy
-                if exit_:
-                    px, py = cx + sx * (d - k * 0.4), cy + sy * (d - k * 0.4)
-                ui.line(px, py, px - ex * k, py, 2.0, col)
-                ui.line(px, py, px, py - ey * k, 2.0, col)
+        icons.draw(ui, "minimize" if exit_ else "maximize", cx, cy, s, col)
 
     @staticmethod
     def icon_arrow_up_right(ui, cx, cy, s, col):
-        ui.line(cx - s * 0.30, cy + s * 0.30, cx + s * 0.30, cy - s * 0.30, 2.0, col)
-        ui.line(cx - s * 0.02, cy - s * 0.30, cx + s * 0.30, cy - s * 0.30, 2.0, col)
-        ui.line(cx + s * 0.30, cy - s * 0.30, cx + s * 0.30, cy + s * 0.02, 2.0, col)
+        icons.draw(ui, "arrow-up-right", cx, cy, s, col)
 
     @staticmethod
     def _plus(ui, cx, cy, s, col):
-        ui.line(cx - s * 0.30, cy, cx + s * 0.30, cy, 2.0, col)
-        ui.line(cx, cy - s * 0.30, cx, cy + s * 0.30, 2.0, col)
+        icons.draw(ui, "plus", cx, cy, s, col)
 
     @staticmethod
     def _minus(ui, cx, cy, s, col):
-        ui.line(cx - s * 0.30, cy, cx + s * 0.30, cy, 2.0, col)
+        icons.draw(ui, "minus", cx, cy, s, col)
 
     # ----------------------------------------------------------------- tooltips
     def _track_hover(self, ui, name):
@@ -273,7 +252,8 @@ class MapsChrome:
         if self.sidebar_open:
             sb = rects["sidebar_bg"]
             glass(ui, *sb, 26, "menu")
-            caps(ui, "// Maps", sb[0] + 20, sb[1] + 28, T.T_TITLE_2, T.TEXT_PRIMARY, "bold", vcenter=True)
+            logo_mark(ui, sb[0] + 16, sb[1] + 12, 32)
+            ui.text_c("GAIA", sb[0] + 58, sb[1] + 28, T.T_TITLE_2, T.TEXT_PRIMARY, weight="semibold")
             tg = rects["sidebar"]
             hv = spring(ui, ("hv", "sidebar"), 1.0 if _in(tg, *mouse) else 0.0, T.SPRING_GENTLE)
             ui.box(tg[0], tg[1], 32, 32, 10, mix((1.0, 1.0, 1.0, 0.10), T.SYS_BLUE, hv))
@@ -364,16 +344,37 @@ class MapsChrome:
 
     # ------------------------------------------------------------------ 3D screen
     def draw_scene_ui(self, ui, w, h, mouse, label, coords, clock, sub, typing, query,
-                      fullscreen, north_vec):
+                      fullscreen, north_vec, weather=None):
+        """``weather`` (optional) is ``weather_ui.build_info``: it adds the condition icon and
+        temperature to the clock pill and makes the pill open the detailed weather card."""
         M, B, ch = T.MARGIN, self.BTN, 52
-        # time + conditions: one compact pill, clock large, conditions quiet beside it
+        # time + conditions: one compact pill, icon + clock large, conditions quiet beside it
+        icon_w = 0
+        if weather is not None:
+            temp, cond = weather_ui.pill_text(weather, self.weather_units)
+            sub = (f"{temp}  \u00b7  {cond}" if temp else cond) + ("  \u00b7  paused" if "paused" in sub else "")
+            wx_icon, wx_tint = weather_ui.condition_icon(weather["kind"], weather["is_day"])
+            icon_w = 30
         sub_fit = ui.fit(sub, T.T_CAPTION_2, min(300, max(100, w * 0.24)))
         cw_clock = ui.text_w(clock, T.T_TITLE_2, weight="semibold")
-        tcw = int(cw_clock + ui.text_w(sub_fit, T.T_CAPTION_2, weight="medium") + 18 + 36)
+        chev = 22 if weather is not None else 0
+        tcw = int(icon_w + cw_clock + ui.text_w(sub_fit, T.T_CAPTION_2, weight="medium") + 18 + 36 + chev)
         tx = w - M - B - 12 - tcw
         glass(ui, tx, M, tcw, ch, ch / 2, "hud")
-        ui.text_c(clock, tx + 18, M + ch / 2, T.T_TITLE_2, T.TEXT_PRIMARY, weight="semibold")
-        ui.text_c(sub_fit, tx + 18 + cw_clock + 12, M + ch / 2 + 1, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="medium")
+        if weather is not None:
+            self._wx_pill = (tx, M, tcw, ch)
+            hvp = spring(ui, ("hv", "weather"), 1.0 if (_in(self._wx_pill, *mouse) or self.weather_open) else 0.0,
+                         T.SPRING_GENTLE)
+            if hvp > 0.01:
+                ui.box(tx + 4, M + 4, tcw - 8, ch - 8, (ch - 8) / 2, (1.0, 1.0, 1.0, 0.10 * hvp))
+            icons.draw(ui, wx_icon, tx + 30, M + ch / 2, 22, wx_tint)
+            icons.draw(ui, "chevron-up" if self.weather_open else "chevron-down", tx + tcw - 22, M + ch / 2, 14,
+                       T.TEXT_TERTIARY)
+        else:
+            self._wx_pill = None
+        ui.text_c(clock, tx + 18 + icon_w, M + ch / 2, T.T_TITLE_2, T.TEXT_PRIMARY, weight="semibold")
+        ui.text_c(sub_fit, tx + 18 + icon_w + cw_clock + 12, M + ch / 2 + 1, T.T_CAPTION_2, T.TEXT_TERTIARY,
+                  weight="medium")
         # place pill with search
         cwid = int(max(200, min(380, tx - 12 - M)))
         glass(ui, M, M, cwid, ch, ch / 2, "hud")
@@ -388,6 +389,12 @@ class MapsChrome:
                     M + 52, M + 9, T.T_LABEL, T.TEXT_PRIMARY, weight="semibold")
             ui.text(coords, M + 52, M + 29, T.T_CAPTION_1, T.TEXT_TERTIARY, weight="medium")
         self.draw_controls(ui, w, h, "scene", mouse, fullscreen, north_vec)
+        if self.weather_open and weather is not None:
+            top = M + ch + 10
+            _, self._wx_hits = weather_ui.draw_panel(ui, max(tx + tcw, weather_ui.PANEL_W + M), top, weather,
+                                                     self.weather_units, mouse, h - top - M - (50 if h < 760 else 0))
+        else:
+            self._wx_hits = []
         self._finish_tooltips(ui, w, h, "scene", mouse)
 
     # ------------------------------------------------------------------ HUD blocks

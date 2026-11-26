@@ -793,15 +793,9 @@ void main() {
     }
 
     lit += (kD * albedo / PI * sDiff + sSpec * (0.02 + 0.35 * metal) * (1.0 - rough)) * ao * uNightFactor;
-    // Ordinary signs keep their wash.  LED screens are lit as real one-sided area emitters and,
-    // like every other light here, are multiplied by the surface's own albedo: a facade no
-    // longer goes milk-white because a screen is near, and the wall the screen hangs on and
-    // everything behind its glass stay dark.
+    // Ordinary signs keep their wash.  Billboards are emissive surfaces only; their
+    // per-fragment area-light loop was removed because dense screen blocks lagged.
     lit += neonSpill(vWorld, N, V) * (0.20 + 0.80 * uNightFactor) * ao;
-    vec3 screenSpec;
-    vec3 screenE = neonScreenSpill(vWorld, N, V, screenSpec);
-    lit += (kD * albedo / PI * screenE
-          + screenSpec * (0.05 + 0.5 * glassMask) * (1.0 - 0.5 * rough)) * ao;
     lit += emissive;
     // Rough masonry has no clearcoat rim; glazing already includes Fresnel above.
     // Validate BEFORE min(): some GPUs turn min(NaN, 32) into a white-hot 32.

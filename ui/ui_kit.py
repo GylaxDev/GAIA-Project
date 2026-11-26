@@ -474,7 +474,7 @@ def button(ui, rect, label, mouse, *, key, kind="secondary", icon=None, focus=Fa
     total = tw + ((isz + 8) if icon else 0)
     cx = x + (w - total) / 2
     if icon:
-        icons.draw(ui, icon, cx + isz / 2, y + h / 2, isz, col, 1.6)
+        icons.draw(ui, icon, cx + isz / 2, y + h / 2, isz, col)
         cx += isz + 8
     ui.text_c(label, cx, y + h / 2, size, col, weight="semibold")
     return hover
@@ -494,9 +494,37 @@ def chip(ui, x, y, text, color=T.TEXT_SECONDARY, size=T.T_CAPTION_1, h=24, pad=1
     fill = fill if fill is not None else (1.0, 1.0, 1.0, 0.10)
     ui.box(x, y, w, h, h / 2, fill, border or (1.0, 1.0, 1.0, 0.10))
     if icon:
-        icons.draw(ui, icon, x + pad + size * 0.5, y + h / 2, size + 2, color, 1.3)
+        icons.draw(ui, icon, x + pad + size * 0.5, y + h / 2, size + 2, color)
     ui.text_c(text, x + pad + iw, y + h / 2, size, color, weight="semibold")
     return w
+
+
+def icon(ui, name, cx, cy, s, color=T.TEXT_PRIMARY, angle=0.0):
+    """Draw a Lucide icon centred on (cx, cy).  The one way icons are drawn in the interface."""
+    return icons.draw(ui, name, cx, cy, s, color, angle=angle)
+
+
+def icon_button(ui, rect, name, mouse, *, key, active=False, size=18, shape="round", enabled=True,
+                color=None):
+    """A square or round glass icon button with the standard hover wash.
+
+    Returns the hover amount (0-1).  Use this instead of drawing a one-off icon plus a
+    hover box, so every icon button in the interface behaves and looks the same.
+    """
+    x, y, w, h = rect
+    over = enabled and inside(rect, *mouse)
+    hv = spring(ui, ("icb", key), float(over), T.SPRING_GENTLE)
+    r = min(w, h) / 2 if shape == "round" else min(T.R_BUTTON, min(w, h) / 2)
+    if active:
+        fill = T.GROUP_SELECTED
+    else:
+        fill = mix((1.0, 1.0, 1.0, 0.10), (1.0, 1.0, 1.0, 0.24), hv)
+    ui.box(x, y, w, h, r, fill, (1.0, 1.0, 1.0, 0.10 + 0.06 * hv))
+    col = color or (WHITE if (active or hv > 0.5) else T.TEXT_SECONDARY)
+    if not enabled:
+        col = T.TEXT_QUATERNARY
+    icons.draw(ui, name, x + w / 2, y + h / 2, size, col)
+    return hv
 
 
 def icon_tile(ui, x, y, s, icon, tile=T.TILE_GRAY, enabled=True):
@@ -504,7 +532,7 @@ def icon_tile(ui, x, y, s, icon, tile=T.TILE_GRAY, enabled=True):
     k = 1.0 if enabled else 0.4
     top, bot = tile if isinstance(tile, tuple) and len(tile) == 2 and hasattr(tile[0], "__len__") else (tile, tile)
     ui.box(x, y, s, s, s * 0.26, (scale_alpha(top, 1.0), scale_alpha(bot, 1.0)), (1.0, 1.0, 1.0, 0.14))
-    icons.draw(ui, icon, x + s / 2, y + s / 2, s * 0.56, (1.0, 1.0, 1.0, k), max(1.4, s / 19.0))
+    icons.draw(ui, icon, x + s / 2, y + s / 2, s * 0.56, (1.0, 1.0, 1.0, k))
 
 
 def close_button(ui, x, y, mouse, key="close", size=32):
@@ -513,12 +541,21 @@ def close_button(ui, x, y, mouse, key="close", size=32):
     hv = spring(ui, ("closebtn", key), float(inside(rect, *mouse)), T.SPRING_GENTLE)
     ui.box(x, y, size, size, size / 2, mix((1.0, 1.0, 1.0, 0.10), (1.0, 1.0, 1.0, 0.26), hv),
            (1.0, 1.0, 1.0, 0.12))
-    icons.draw(ui, "close", x + size / 2, y + size / 2, size * 0.36, (1.0, 1.0, 1.0, 0.92), 1.9)
+    icons.draw(ui, "close", x + size / 2, y + size / 2, size * 0.5, (1.0, 1.0, 1.0, 0.92))
     return rect
 
 
 def logo_mark(ui, x, y, s=40.0, t=0.0):
-    """The Project GAIA mark: a glass rounded square with a wire-frame globe."""
+    """The GAIA app icon (``assets/icons``), with a soft shadow and a hairline rim.
+
+    Falls back to a drawn globe mark if the icon files are not bundled.
+    """
+    brand = getattr(ui, "brand", None)
+    if brand is not None:
+        ui.box(x, y, s, s, s / 2, None, None, shadow=max(6.0, s * 0.34), shadow_dy=s * 0.10, shadow_alpha=0.50)
+        if brand(x, y, s):
+            ui.ring(x + s / 2, y + s / 2, s / 2 - 0.5, 1.0, (1.0, 1.0, 1.0, 0.16))
+            return
     ui.box(x, y, s, s, s * 0.27, ((0.16, 0.18, 0.22, 0.95), (0.07, 0.08, 0.10, 0.95)),
            (1.0, 1.0, 1.0, 0.16))
     cx, cy, r = x + s / 2, y + s / 2, s * 0.27
@@ -754,7 +791,7 @@ def kv_row(ui, x, y, w, h, label, value, icon=None):
     """A key / value row: label on the left, the value in the secondary tone on the right."""
     lx = x
     if icon:
-        icons.draw(ui, icon, x + 12, y + h / 2, 18, T.TEXT_TERTIARY, 1.5)
+        icons.draw(ui, icon, x + 12, y + h / 2, 18, T.TEXT_TERTIARY)
         lx = x + 32
     ui.text_c(label, lx, y + h / 2, T.T_BODY, T.TEXT_SECONDARY)
     ui.text_c(ui.fit(str(value), T.T_BODY, w - (lx - x) - ui.text_w(label, T.T_BODY) - 20), x + w, y + h / 2,

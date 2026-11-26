@@ -14,35 +14,20 @@ sign carries a colour, a seed and a style kind:
 from ..core.config import NEON_EXPOSURE_STOPS
 from .materials import MATERIAL_LIGHT
 
-# Mean brightness of a creative relative to its peak (most ads are dark with bright type),
-# and an artistic gain: the sim keeps screens at 120 cd/m2 at night so they do not clip
-# under the ten-stop night exposure, but a real LED wall is thousands of nits and floods
-# the street.  The gain puts the lit ground/facades back at that order of magnitude.
-SCREEN_MEAN_POWER = 0.45
-SCREEN_SPILL_GAIN = 4.0
-
-NEON_SPILL = MATERIAL_LIGHT + f"const float NEON_GAIN = exp2({NEON_EXPOSURE_STOPS});\n" + f"""
-const float SCREEN_MEAN_POWER = {SCREEN_MEAN_POWER};
-const float SCREEN_SPILL_GAIN = {SCREEN_SPILL_GAIN};
-""" + """
+# Billboard screens are emissive surfaces only: they used to register an area
+# emitter per screen, and the per-fragment loop over those sources dominated the
+# night pass.  Ordinary signs keep their small omnidirectional spill.
+NEON_SPILL = MATERIAL_LIGHT + f"const float NEON_GAIN = exp2({NEON_EXPOSURE_STOPS});\n" + """
 #define MAX_NEON 48
 uniform vec3 uNeonPos[MAX_NEON];
 uniform vec3 uNeonCol[MAX_NEON];
-// LED screens: xy = outward normal (facade screens are vertical, so z is 0), zw = half width and
-// half height in metres.  xy = 0 marks an ordinary sign.
-uniform vec4 uNeonScr[MAX_NEON];
 uniform int  uNumNeon;
-// uNeonPos of a screen sits this far in front of its glass (SCREEN_LIGHT_SETBACK, render/lod.py)
-const float NEON_SCREEN_SETBACK = 3.0;
-
-bool neonIsScreen(int i) { vec2 n = uNeonScr[i].xy; return dot(n, n) > 0.25; }
 
 // Ordinary signs and shop windows: small omnidirectional sources, unchanged look.
 vec3 neonSpill(vec3 P, vec3 N, vec3 V) {
     vec3 acc = vec3(0.0);
     for (int i = 0; i < MAX_NEON; i++) {
         if (i >= uNumNeon) break;
-        if (neonIsScreen(i)) continue;
         vec3 d = uNeonPos[i] - P;
         float r2 = dot(d, d);
         if (r2 > 6400.0) continue;
@@ -56,60 +41,6 @@ vec3 neonSpill(vec3 P, vec3 N, vec3 V) {
     }
     // Sign radiance times a small emitting area, in the same units as sun / lamp spill.
     return acc * nits(SIGN_NITS) * NEON_GAIN;
-}
-
-// LED advertising screens as what they are: flat rectangular Lambertian emitters.
-// Returns irradiance in the same scene units as sun / lamp spill, so the caller applies
-// the surface's own albedo (a wall must not glow white just because a screen is near).
-//
-//   * One-sided: a point at or behind the glass plane gets nothing.  This is what keeps
-//     the host facade, the wall behind it and everything beside the screen from being
-//     washed by a point light that used to radiate in every direction.
-//   * Near field is bounded: distance is taken to the nearest point on the rectangle and
-//     softened by the area (E = L A cos cos / (r^2 + A/pi)), so there is no hot spot
-//     just in front of the glass and the limit at the glass is pi * L.
-//   * Reaches the ground and the opposite facades by the inverse-square law instead of
-//     a height cut-off.
-vec3 neonScreenSpill(vec3 P, vec3 N, vec3 V, out vec3 specOut) {
-    vec3 acc = vec3(0.0), accSpec = vec3(0.0);
-    for (int i = 0; i < MAX_NEON; i++) {
-        if (i >= uNumNeon) break;
-        vec4 scr = uNeonScr[i];
-        if (dot(scr.xy, scr.xy) <= 0.25) continue;
-        vec3 nrm = vec3(normalize(scr.xy), 0.0);
-        vec3 g = uNeonPos[i] - nrm * NEON_SCREEN_SETBACK;      // centre of the glass
-        vec3 rel = P - g;
-        float h = dot(rel, nrm);                                // metres in front of the glass
-        if (h <= 0.05) continue;
-        float rc2 = dot(rel, rel);
-        if (rc2 > 22500.0) continue;                            // 150 m
-        vec2 ext = max(scr.zw, vec2(0.5));
-        vec3 t = vec3(-nrm.y, nrm.x, 0.0);                      // horizontal axis of the glass
-        vec3 b = cross(nrm, t);
-        vec2 uv = vec2(dot(rel, t), dot(rel, b));
-        vec2 off = uv - clamp(uv, -ext, ext);                   // in-plane gap to the rectangle
-        float dr2 = h * h + dot(off, off);                      // distance to rectangle, squared
-        float dr = sqrt(dr2);
-        float area = 4.0 * ext.x * ext.y;
-        float cosE = h / dr;                                    // emission angle
-        // direction from the receiver to the nearest point on the glass
-        vec3 nearest = g + t * clamp(uv.x, -ext.x, ext.x) + b * clamp(uv.y, -ext.y, ext.y);
-        vec3 L = (nearest - P) / dr;
-        float cosR = max(dot(N, L), 0.0);
-        float fade = 1.0 - smoothstep(90.0, 150.0, sqrt(rc2));
-        float form = area / (dr2 + area * 0.3183);              // A / (r^2 + A/pi)
-        // chroma only: brightness comes from the screen's luminance below
-        vec3 c = min(uNeonCol[i] / max(dot(uNeonCol[i], PHOTO_LUMA), 1e-4), vec3(2.5));
-        float E = form * cosE * fade;
-        acc += c * (E * cosR);
-        // broad glint of a big source on glossy glass / wet paving, not a pin-point hot spot
-        vec3 H = normalize(L + V);
-        accSpec += c * (E * pow(max(dot(N, H), 0.0), 16.0));
-    }
-    float lum = mix(SCREEN_DAY_NITS, SCREEN_NIGHT_NITS, uNightFactor)
-              * SCREEN_MEAN_POWER * SCREEN_SPILL_GAIN;
-    specOut = accSpec * nits(lum) * NEON_GAIN * 0.12;
-    return acc * nits(lum) * NEON_GAIN;
 }
 """
 
@@ -189,30 +120,26 @@ float hash21(vec2 p) {
     return fract(p.x * p.y);
 }
 vec3 billboardPattern(vec2 uv, vec2 uvDx, vec2 uvDy, float seed, vec3 tint) {
-    // Panels keep whatever shape the facade gives them. The 16:9 creative is scaled so it
-    // is whole across the panel's short side, then repeats and scrolls along the long side
-    // like an LED ticker; each repeat advances to the next creative, so no bars are needed.
+    // One static creative per screen, fitted whole inside the panel (letterboxed, never
+    // cropped).  Copies are not repeated or scrolled: several tiers of a facade can share
+    // one panel, and two ribbons creeping in opposite directions overlapped into ghosted
+    // double artwork.  The layer changes for the whole panel every few seconds, so the ad
+    // still rotates without any pixel ever landing on a different creative than its
+    // neighbour.
     float aspect = max(vStyle.z, 0.3);
-    bool wide = aspect >= uBillboardAspect;
-    float speed = mix(0.035, 0.085, hash21(vec2(seed * 57.3, 3.1)));   // creatives per second
-    float dir = hash21(vec2(seed * 13.7, 9.2)) < 0.5 ? -1.0 : 1.0;
     float n = float(max(uBillboardCount, 1));
-    float scroll = mod(uTime, n / speed) * speed;   // one full cycle of creatives; keeps q small
-    // q: unwrapped creative coordinates, one unit = one whole creative.
-    vec2 q = wide ? vec2((uv.x - 0.5) * aspect / uBillboardAspect + dir * scroll, uv.y)
-                  : vec2(uv.x, (uv.y - 0.5) * uBillboardAspect / aspect - scroll);
-    vec2 tile = floor(q);
-    vec2 f = fract(q);
-    float layer = mod(floor(seed * 4096.0) + (wide ? tile.x : tile.y), n);
-    // Gradients of the unwrapped coordinate keep mip selection smooth across tile seams.
-    // They are the panel's own screen-space footprint (taken by the caller in uniform
-    // control flow), so the level is right on every driver: a zero gradient here would
-    // pin every screen to mip 0 and alias a creative into a stipple at street distance.
-    vec2 qDx = wide ? vec2(uvDx.x * aspect / uBillboardAspect, uvDx.y)
-                    : vec2(uvDx.x, uvDx.y * uBillboardAspect / aspect);
-    vec2 qDy = wide ? vec2(uvDy.x * aspect / uBillboardAspect, uvDy.y)
-                    : vec2(uvDy.x, uvDy.y * uBillboardAspect / aspect);
-    vec3 ad = textureGrad(uBillboards, vec3(f, layer), qDx, qDy).rgb;
+    float slot = floor(uTime / 9.0 + seed * 17.0);
+    float layer = mod(floor(seed * 4096.0) + slot, n);
+    bool wide = aspect >= uBillboardAspect;
+    // Scale the 16:9 creative so it spans the panel's short side and stays inside the long
+    // side; outside that band the sample is masked to black, giving clean bars.
+    float fx = wide ? aspect / uBillboardAspect : 1.0;
+    float fy = wide ? 1.0 : uBillboardAspect / aspect;
+    vec2 f = vec2(0.5 + (uv.x - 0.5) * fx, 0.5 + (uv.y - 0.5) * fy);
+    vec2 fDx = vec2(uvDx.x * fx, uvDx.y * fy);
+    vec2 fDy = vec2(uvDy.x * fx, uvDy.y * fy);
+    vec3 ad = textureGrad(uBillboards, vec3(f, layer), fDx, fDy).rgb;
+    float inside = step(0.0, f.x) * step(f.x, 1.0) * step(0.0, f.y) * step(f.y, 1.0);
     // Fine LED scanlines: a band-limited ripple, not a hard square wave.  A square wave
     // carries harmonics far above the line pitch, so on a screen that fills the frame they
     // beat into a visible lattice; a cosine and a fade that starts while a line is still ~2
@@ -220,7 +147,7 @@ vec3 billboardPattern(vec2 uv, vec2 uvDx, vec2 uvDy, float seed, vec3 tint) {
     float lines = uv.y * 260.0;
     float ripple = 1.0 - smoothstep(0.25, 0.75, (abs(uvDx.y) + abs(uvDy.y)) * 260.0);
     float scan = 1.0 - 0.10 * ripple * (0.5 + 0.5 * cos(lines * 6.2831853));
-    return ad * scan * 1.35;
+    return ad * inside * scan * 1.35;
 }
 vec3 screenPattern(vec2 uv, vec2 uvDx, vec2 uvDy, float seed, float t, vec3 tint, float kind) {
     if (kind < 1.5) {

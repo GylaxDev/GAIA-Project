@@ -5,6 +5,7 @@ import io
 import math
 import time
 
+from . import icons
 from . import theme as T
 from .ui_kit import _in, glass, progress, spring
 from ..render.overlay import make_texture
@@ -162,17 +163,9 @@ class NowPlayingPanel:
     @staticmethod
     def _icon(ui, name, rect, color, playing):
         cx, cy = rect[0] + rect[2] / 2, rect[1] + rect[3] / 2
-        if name == "previous":
-            ui.rect(cx - 6, cy - 5, 2, 10, color)
-            ui.tri((cx + 5, cy - 5), (cx + 5, cy + 5), (cx - 3, cy), color)
-        elif name == "next":
-            ui.tri((cx - 5, cy - 5), (cx - 5, cy + 5), (cx + 3, cy), color)
-            ui.rect(cx + 4, cy - 5, 2, 10, color)
-        elif playing:
-            ui.rect(cx - 4, cy - 5, 3, 10, color)
-            ui.rect(cx + 2, cy - 5, 3, 10, color)
-        else:
-            ui.tri((cx - 3.5, cy - 5.5), (cx - 3.5, cy + 5.5), (cx + 5, cy), color)
+        glyph = "skip-back" if name == "previous" else "skip-forward" if name == "next" else \
+            "pause" if playing else "play"
+        icons.draw(ui, glyph, cx, cy, 18, color)
 
     # ------------------------------------------------------------------- cover
     def _ensure_art(self, ui, data, px):

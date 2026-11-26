@@ -41,6 +41,7 @@ from ..ui.navigation_ui import NavigationPanel
 from ..world.places import parse_places
 from ..ui.settings_ui import SettingsPanel
 from ..ui import theme as T
+from ..ui import weather_ui
 from ..render.overlay import Overlay2D, TileCache
 from ..vehicles import pick
 from ..core.projection import ChunkGrid, LocalProjection, tile_bounds, tile_d2
@@ -56,6 +57,28 @@ from dataclasses import replace as _replace
 QUEUED, LOADING, DONE, FAILED = "queued", "loading", "done", "failed"
 
 _DPI_AWARE = False
+
+
+APP_NAME = "GAIA"
+ICON_FILE = Path(__file__).resolve().parents[1] / "assets" / "icons" / "gaia_64.png"
+
+
+def _set_app_identity():
+    """Give the process its own taskbar identity (Windows would otherwise group it under python.exe
+    and show the Python icon) and set the window icon to the GAIA badge."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("GAIA.Viewer")
+        except Exception:
+            pass
+
+
+def _window_icon(pygame):
+    try:
+        pygame.display.set_icon(pygame.image.load(str(ICON_FILE)))
+    except Exception:
+        pass            # a missing icon file must never stop the app
 
 
 def _enable_dpi_awareness():
@@ -641,14 +664,16 @@ class App(MenuHost):
         if (self.utc_offset is not None and not math.isfinite(self.utc_offset)) or not math.isfinite(self.light_pollution):
             raise ValueError('UTC offset and light pollution must be finite')
         _enable_dpi_awareness()
+        _set_app_identity()
         self.ui_scale = _system_ui_scale()
         size = (int(round(size[0] * self.ui_scale)), int(round(size[1] * self.ui_scale)))
         import pygame
         self.pg = pygame
         pygame.init()
+        _window_icon(pygame)                # before the window exists, so the taskbar picks it up
         self._init_menu_state(cache_dir, skip_menu)
         tm.LOG.attach_file(Path(cache_dir) / "osm3d.log")
-        tm.LOG.info("starting OSM 3D")
+        tm.LOG.info(f"starting {APP_NAME}")
         self._joystick = None
         if pygame.joystick.get_count() > 0:
             self._joystick = pygame.joystick.Joystick(0)
@@ -660,7 +685,7 @@ class App(MenuHost):
                 pygame.display.toggle_fullscreen()
             except pygame.error:
                 pass
-        pygame.display.set_caption("OSM 3D")
+        pygame.display.set_caption(APP_NAME)
         self.fetcher, self.radius, self.cfg = fetcher, radius, cfg
         w, h = pygame.display.get_window_size()
         self.ui = Overlay2D()               # first, so the boot screen can draw during the slow steps
@@ -956,6 +981,16 @@ class App(MenuHost):
             else: self._say("Pick a place on the map first", 2.5)
         elif act == "sidebar":
             ch.sidebar_open = not ch.sidebar_open
+        elif act == "weather":
+            ch.weather_open = not ch.weather_open
+        elif act == "weather_close":
+            ch.weather_open = False
+        elif act == "weather_units":
+            ch.weather_units.imperial = not ch.weather_units.imperial
+        elif act == "weather_live":
+            self.set_live_weather(not self.weather.live)
+        elif act == "weather_panel":
+            pass                            # a click on the card itself must not reach the 3D view
         elif act == "fullscreen":
             self._toggle_fullscreen()
         elif act == "map":
@@ -1795,9 +1830,10 @@ class App(MenuHost):
         sub = self.weather.label + ("  \u00b7  live" if self.weather.live else "")
         if not self.sky_clock.running:
             sub += "  \u00b7  paused"
+        wx = weather_ui.build_info(self.weather, self.live_weather, sky.stamp)
         self.chrome.draw_scene_ui(ui, w, h, mouse, self.label or "Scene", coords, sky.stamp, sub,
                                   self.typing, self.query, self.pg.display.is_fullscreen(),
-                                  (math.cos(az), math.sin(az)))
+                                  (math.cos(az), math.sin(az)), weather=wx)
         # bottom-left: streaming progress only while something is loading, full diagnostics on F3
         rows = []
         st = self.world.manager.stats() if self.world else None
@@ -2265,7 +2301,7 @@ class App(MenuHost):
             if time.time() - t_fps >= 1.0:
                 where = self.label if self.mode == "scene" else "Map"
                 pg.display.set_caption(
-                    f"OSM 3D - {where}  |  {frames} fps  |  {self.weather.label}"
+                    f"{APP_NAME} - {where}  |  {frames} fps  |  {self.weather.label}"
                     f"{'  |  wireframe' if self.wireframe else ''}")
                 self.fps = frames
                 frames, t_fps = 0, time.time()

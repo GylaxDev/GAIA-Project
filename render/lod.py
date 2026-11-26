@@ -113,22 +113,18 @@ def pack_vertices(v, terrain=False, *, water=False):
     return out
 
 
-SCREEN_LIGHTS_PER_MESH = 1024    # safety cap; a dense tile is ~400 screens
-SCREEN_LIGHT_SETBACK = 3.0       # metres in front of the glass, so the source clears its own wall
-NEON_SAMPLE_FLOATS = 11          # xyz, rgb, normal xyz, half width, half height
+NEON_SAMPLE_FLOATS = 6           # xyz, rgb
+NEON_SAMPLES_PER_MESH = 24
 
 
 def neon_light_samples(mesh):
     """Small mesh-local source table; index scanning belongs in the worker.
 
-    Ordinary signs contribute a few point samples. Each LED advertising screen (part 8,
-    style.y 4) is one area source at the centre of its glass, set back along its normal,
-    carrying the screen's outward normal and half extents.  The shader uses those to throw
-    light forward into the street and to mirror the rectangle in glazing opposite.
-
-    Keeping every screen matters: the old strongest-24 cap left whole blocks (including
-    the Times Square bowtie) without a source because a handful of supersized boards
-    elsewhere in the same 1.8 km tile outranked them.
+    Only ordinary signs contribute point samples. LED advertising screens (part 8,
+    style.y 4) are deliberately excluded: each one used to become a one-sided area
+    emitter, and every ground/building fragment paid for a 48-light screen loop.
+    Dense billboard blocks made the night pass lag. The screens still render as
+    emissive surfaces; they just no longer cast light onto the street or facades.
     """
     v = mesh.vertices
     if not len(v) or not len(mesh.indices):
@@ -136,44 +132,13 @@ def neon_light_samples(mesh):
     screen = (v[:, 16] == 8.0) & (v[:, 11] == 4.0)
     ids = np.unique(mesh.indices)
     ids = ids[~screen[ids]]
-    ids = ids[::max(1, len(ids) // 24)][:24]
+    if not len(ids):
+        return np.empty((0, NEON_SAMPLE_FLOATS), np.float32)
+    ids = ids[::max(1, len(ids) // NEON_SAMPLES_PER_MESH)][:NEON_SAMPLES_PER_MESH]
     samples = np.zeros((len(ids), NEON_SAMPLE_FLOATS), np.float32)
     samples[:, :3] = v[ids, :3]
     samples[:, 3:6] = np.clip(v[ids, 6:9] * 2.0, 0.0, 2.0)
-    if not screen.any():
-        return samples
-    sv = v[screen]
-    _, inv = np.unique(sv[:, 10], return_inverse=True)       # style.x = per-screen seed
-    n = int(inv.max()) + 1
-    count = np.bincount(inv, minlength=n).astype(np.float64)
-    lo = np.full((n, 3), np.inf); hi = np.full((n, 3), -np.inf)
-    np.minimum.at(lo, inv, sv[:, :3]); np.maximum.at(hi, inv, sv[:, :3])
-    ext = hi - lo
-    area = np.hypot(ext[:, 0], ext[:, 1]) * ext[:, 2]
-    keep = np.argsort(-area)[:SCREEN_LIGHTS_PER_MESH]
-    normal = np.stack([np.bincount(inv, weights=sv[:, 3 + k], minlength=n) / count for k in range(3)], 1)
-    normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-6)
-    tint = np.stack([np.bincount(inv, weights=sv[:, 6 + k], minlength=n) / count for k in range(3)], 1)
-    centre = (lo + hi) * .5
-    # Width along the screen's own horizontal axis; the AABB diagonal overestimates
-    # boards that sit at the Manhattan grid angle.
-    up = np.where((np.abs(normal[:, 2]) > .9)[:, None],
-                  np.array([0., 1., 0.], np.float32),
-                  np.array([0., 0., 1.], np.float32))
-    tangent = np.cross(up, normal)
-    tangent /= np.maximum(np.linalg.norm(tangent, axis=1, keepdims=True), 1e-6)
-    rel = sv[:, :3] - centre[inv]
-    u = np.einsum("ij,ij->i", rel, tangent[inv])
-    ulo = np.full(n, np.inf); uhi = np.full(n, -np.inf)
-    np.minimum.at(ulo, inv, u); np.maximum.at(uhi, inv, u)
-    out = np.zeros((len(keep), NEON_SAMPLE_FLOATS), np.float32)
-    out[:, :3] = centre[keep] + normal[keep] * SCREEN_LIGHT_SETBACK
-    # Ads are mostly pale: lift the tint toward white, then scale by area (m^2 / 20, 1.2..6).
-    out[:, 3:6] = (tint[keep] * .5 + .5) * np.clip(area[keep] / 20.0, 1.2, 6.0)[:, None]
-    out[:, 6:9] = normal[keep]
-    out[:, 9] = (uhi[keep] - ulo[keep]) * .5
-    out[:, 10] = ext[keep, 2] * .5
-    return np.vstack((samples, out))
+    return samples
 
 
 def prepare_mesh(mesh, kind):
