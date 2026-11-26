@@ -110,7 +110,6 @@ def roof_color(wall_col):
 
 
 def edge_color(wall_col):
-    # a soft, darker crease line - the old bright outline looked like a glowing
     # trim round every roof
     return np.clip(wall_col * 0.62, 0, 1).astype(np.float32)
 
