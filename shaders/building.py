@@ -158,17 +158,48 @@ float band(float x, float lo, float hi, float footprint) {
                 - bandIntegral(x - w * 0.5, lo, hi)) / w, 0.0, 1.0);
 }
 
-// Membrane / gravel roof with weathering; fades to its mean colour with distance.
-vec3 roofSurface(vec3 wp, vec3 base, float seed) {
-    float near = 1.0 - smoothstep(60.0, 260.0, length(uCamPos - wp));
-    if (near <= 0.001) return vec3(0.38, 0.375, 0.36);
-    float n = 0.7 * vnoise(wp.xy * 0.7) + 0.3 * vnoise(wp.xy * 2.9 + seed * 17.0);
-    vec3 mean = vec3(0.38, 0.375, 0.36);
-    vec3 col = mean * (0.78 + 0.44 * mix(0.5, n, near));
-    // faint panel seams
-    vec2 g = abs(fract(wp.xy / 3.2 + seed * 7.0) - 0.5);
-    col *= 1.0 - 0.10 * near * smoothstep(0.46, 0.5, max(g.x, g.y));
-    return col;
+// Roof cladding.  A warm, saturated roof colour is clay pan tile laid in courses
+// down the pitch; a neutral one stays a weathered membrane / gravel deck.  Both
+// keep the per-building roof colour as their mean so a tiled district still reads
+// terracotta from the air instead of dissolving into uniform concrete.
+vec3 roofSurface(vec3 wp, vec3 base, vec3 N, float seed) {
+    float dist = length(uCamPos - wp);
+    float near = 1.0 - smoothstep(70.0, 260.0, dist);
+    // A pitched face is clad in tiles whatever its colour (grey tile is a real roof);
+    // only a level cap falls back to the membrane / gravel deck.
+    float warm = clamp((base.r - base.b) * 4.5, 0.0, 1.0);
+    if (warm < 0.18 && N.z > 0.985) {
+        vec3 mean = mix(vec3(0.38, 0.375, 0.36), base, 0.30);
+        if (near <= 0.001) return mean;
+        float n = 0.7 * vnoise(wp.xy * 0.7) + 0.3 * vnoise(wp.xy * 2.9 + seed * 17.0);
+        vec3 col = mean * (0.78 + 0.44 * mix(0.5, n, near));
+        // faint panel seams
+        vec2 g = abs(fract(wp.xy / 3.2 + seed * 7.0) - 0.5);
+        col *= 1.0 - 0.10 * near * smoothstep(0.46, 0.5, max(g.x, g.y));
+        return mix(mean, col, near);
+    }
+    // Courses run down the pitch: one axis across the slope, one up it.
+    vec3 mean = base * 0.82;
+    if (near <= 0.001) return mean;
+    vec2 dn = N.xy;
+    float fl = length(dn);
+    dn = fl > 1e-4 ? dn / fl : vec2(0.0, 1.0);
+    vec2 tg = vec2(-dn.y, dn.x);
+    float sinPitch = max(sqrt(max(1.0 - N.z * N.z, 0.0)), 0.22);
+    float u = dot(wp.xy, tg) / 0.28;
+    float v = dot(wp.xy, dn) / (0.30 / sinPitch);
+    u += 0.5 * mod(floor(v), 2.0);          // staggered joints between courses
+    vec2 f = fract(vec2(u, v));
+    float pan    = 0.5 + 0.5 * cos((f.x - 0.5) * 6.2831853);  // rounded pan barrel
+    float gap    = smoothstep(0.0, 0.10, min(f.x, 1.0 - f.x));
+    float course = smoothstep(0.0, 0.12, f.y);                // shadow under each course
+    float tile   = hash21(floor(vec2(u, v)) + floor(seed * 97.0));
+    vec3 col = base * (0.68 + 0.40 * pan) * (0.88 + 0.24 * tile);
+    col *= 0.68 + 0.32 * gap * (0.72 + 0.28 * course);
+    // rain streaks running down the pitch
+    float streak = vnoise(vec2(dot(wp.xy, tg) * 1.9, dot(wp.xy, dn) * 0.35));
+    col *= 1.0 - 0.14 * smoothstep(0.55, 0.95, streak);
+    return mix(mean, col, near);
 }
 
 
@@ -291,7 +322,7 @@ void main() {
                 vec2 ro = vec2((mod(floor(bay), 2.0) + fx) * 3.0, localZ);
                 vec3 rd = vec3(dot(Rv, Tu), Rv.z, dot(Rv, -N));
                 float usage = floor(hash21(vec2(grp + 41.7, seed * 17.9)) * 4.99);
-                interiorRad = shopRadiance(rd, ro, vec2(6.0,4.2), usage, hh,
+                interiorRad = shopRadiance(rd, ro, vec2(4.5,3.0), usage, hh,
                                           uAmbColor*.10+uSunColor*sf*dayK*.008, facadeFootprint);
                 interiorW = iw;
             }
@@ -303,7 +334,7 @@ void main() {
     } else if (abs(vPartKind) < 0.1) {
         // ================= MID-SECTION (facade) =================
         if (N.z > 0.55) {
-            albedo = roofSurface(vWorld, vColor, seed);
+            albedo = roofSurface(vWorld, vColor, N, seed);
             rough = 0.9; metal = 0.0;
         } else {
             float hs  = hash21(vec2(seed * 91.7 + 3.1, seed * 13.3 + 7.7));
@@ -312,15 +343,15 @@ void main() {
             float topD = bH - localZ;           // distance below the wall top
 
             float floorH, colW, margin;
-            if (theme < 0.5)      { floorH = 3.9; colW = 1.5; margin = 0.40; }   // curtain wall
-            else if (theme < 1.5) { floorH = 3.2; colW = 3.0; margin = 1.10; }   // brick
-            else if (theme < 2.5) { floorH = 3.6; colW = 2.7; margin = 0.55; }   // stone
-            else if (theme < 3.5) { floorH = 6.0; colW = 3.0; margin = 1.50; }   // metal / industrial
-            else if (theme < 4.5) { floorH = 3.4; colW = 2.8; margin = 0.55; }   // concrete
-            else if (theme < 5.5) { floorH = 3.05; colW = 2.25; margin = 0.70; } // pre-war brick walk-up
-            else if (theme < 6.5) { floorH = 3.45; colW = 2.85; margin = 0.85; } // beaux-arts limestone
-            else if (theme < 7.5) { floorH = 3.55; colW = 1.80; margin = 0.50; } // art-deco pier strips
-            else                  { floorH = 4.15; colW = 2.35; margin = 0.60; } // cast-iron loft
+            if (theme < 0.5)      { floorH = 3.6; colW = 1.35; margin = 0.40; }   // curtain wall
+            else if (theme < 1.5) { floorH = 3.0; colW = 2.5; margin = 1.10; }   // brick
+            else if (theme < 2.5) { floorH = 3.4; colW = 2.3; margin = 0.55; }   // stone
+            else if (theme < 3.5) { floorH = 4.8; colW = 2.6; margin = 1.50; }   // metal / industrial
+            else if (theme < 4.5) { floorH = 3.2; colW = 2.4; margin = 0.55; }   // concrete
+            else if (theme < 5.5) { floorH = 2.9; colW = 1.95; margin = 0.70; } // pre-war brick walk-up
+            else if (theme < 6.5) { floorH = 3.3; colW = 2.4; margin = 0.85; } // beaux-arts limestone
+            else if (theme < 7.5) { floorH = 3.4; colW = 1.6; margin = 0.50; } // art-deco pier strips
+            else                  { floorH = 3.8; colW = 2.05; margin = 0.60; } // cast-iron loft
             colW *= mix(0.90, 1.16, hs2);
 
             // Fit a whole number of window bays to this wall so nothing is cut off at corners.
@@ -353,7 +384,7 @@ void main() {
             float receded  = smoothstep(120.0, 650.0, dist);
             windowLod = mix(1.0, 0.55, max(subpixel, receded));
 
-            vec4 windowRect = vec4(.035, .965, .20, .98);
+            vec4 windowRect = vec4(.035, .965, .24, .90);
             if (theme < 0.5) {
                 // ---------- glass curtain wall: spandrels + mullions + fins ----------
                 vec3 tint;
@@ -366,7 +397,7 @@ void main() {
                 rough = 0.55; metal = 0.0;     // powder-coated frames are dielectric paint
 
                 float gx = band(cell.x, 0.035, 0.965, pixel.x);
-                float gy = band(cell.y, 0.20, 0.98, pixel.y);
+                float gy = band(cell.y, 0.24, 0.90, pixel.y);
                 winMask = gx * gy * hasWin;
                 float mullion = 1.0 - gx;
                 albedo = mix(albedo, frame, mullion / max(1.0 - winMask, 0.01));
@@ -522,7 +553,7 @@ void main() {
             bool  office = theme < 0.5 || (bH > 35.0 &&
                            ((theme > 3.5 && theme < 4.5) || (theme > 1.5 && theme < 2.5)));
             float unitCells = office && theme < .5
-                            ? 3.0 + floor(hash21(vec2(cid.y + 71.0, seed * 39.0)) * 3.0) : 2.0;
+                            ? 2.0 + floor(hash21(vec2(cid.y + 71.0, seed * 39.0)) * 3.0) : 2.0;
             float unitId = floor(cid.x / unitCells);
             float floorId = cid.y;
             float roomRand  = hash21(vec2(unitId + seed * 131.0, floorId + seed * 29.0));
@@ -590,11 +621,11 @@ void main() {
             if (iw > 0.0 && idist < uFogFar) {
                 float ux0 = floor(cid.x / unitCells) * unitCells;
                 vec4 hh = roomHash(vec2(floor(cid.x / unitCells), cid.y), seed);
-                vec2 ro = vec2((cid.x - ux0 + ffrac.x) * cw, ffrac.y * floorH);
+                vec2 ro = vec2((cid.x - ux0 + ffrac.x) * cw, ffrac.y * floorH - 0.25); // slab below, ceiling void above: clear height = floorH - 0.5
                 vec3 rd = vec3(dot(Rv, Tu), Rv.z, dot(Rv, -N));
-                float depthM = mix(3.6, 7.2, hh.w);
+                float depthM = mix(3.0, 5.4, hh.w);
                 float roomWidth = min(unitCells, nCols - ux0) * cw;
-                vec3 rad = interiorRadiance(rd, ro, vec2(roomWidth, floorH), depthM, hh,
+                vec3 rad = interiorRadiance(rd, ro, vec2(roomWidth, floorH - 0.5), depthM, hh,
                                             roomLit * bright, emisC, inAmb, office, facadeFootprint);
                 rad = windowDressing(rad, rd, ffrac, vec2(cw, floorH), windowRect,
                                      hh, roomLit * bright, emisC, inAmb, office);
@@ -604,7 +635,7 @@ void main() {
         }
     } else if (vPartKind < 1.5) {
         // ================= ROOF =================
-        albedo = roofSurface(vWorld, vColor, seed);
+        albedo = roofSurface(vWorld, vColor, N, seed);
         rough  = 0.88; metal = 0.0;
     } else if (vPartKind > 8.5 && vPartKind < 9.5) {
         // ================= ROOFTOP: parapet, plant rooms, AC units =================
@@ -648,10 +679,20 @@ void main() {
     albedo = linearColor(albedo);
     vec2 albRange = PAINT_REFLECTANCE;
     bool streetProp = vPartKind > 6.5 && vPartKind < 8.5 && theme > 2.5;
-    if ((!streetProp && N.z > 0.55) || (vPartKind > 0.5 && vPartKind < 1.5)) albRange = ROOF_REFLECTANCE;
+    bool roofFace = (!streetProp && N.z > 0.55) || (vPartKind > 0.5 && vPartKind < 1.5);
+    if (roofFace) albRange = ROOF_REFLECTANCE;
     // Wall/frame coverage is already mixed: clamping it to the masonry minimum
     // would turn dark frames and spandrels into pale coloured borders.
-    albedo = mix(reflectanceRange(albedo, albRange), albedo, glassMask);
+    if (roofFace) {
+        // One gain per roof, taken from its unpatterned colour.  Renormalising every
+        // pixel to the same luminance (as reflectanceRange does) would erase the tile
+        // courses, leaving a flat slab of the right hue.
+        vec3 roofBase = linearColor(vColor);
+        float y = dot(roofBase, PHOTO_LUMA);
+        albedo *= clamp(y, albRange.x, albRange.y) / max(y, 1e-6);
+    } else {
+        albedo = mix(reflectanceRange(albedo, albRange), albedo, glassMask);
+    }
     if (metal > 0.5) albedo = mix(albedo, vec3(0.56, 0.57, 0.58), metal);  // bare iron / steel
 
     // Wet facade + animated beads running down glazing.
@@ -752,7 +793,15 @@ void main() {
     }
 
     lit += (kD * albedo / PI * sDiff + sSpec * (0.02 + 0.35 * metal) * (1.0 - rough)) * ao * uNightFactor;
+    // Ordinary signs keep their wash.  LED screens are lit as real one-sided area emitters and,
+    // like every other light here, are multiplied by the surface's own albedo: a facade no
+    // longer goes milk-white because a screen is near, and the wall the screen hangs on and
+    // everything behind its glass stay dark.
     lit += neonSpill(vWorld, N, V) * (0.20 + 0.80 * uNightFactor) * ao;
+    vec3 screenSpec;
+    vec3 screenE = neonScreenSpill(vWorld, N, V, screenSpec);
+    lit += (kD * albedo / PI * screenE
+          + screenSpec * (0.05 + 0.5 * glassMask) * (1.0 - 0.5 * rough)) * ao;
     lit += emissive;
     // Rough masonry has no clearcoat rim; glazing already includes Fresnel above.
     // Validate BEFORE min(): some GPUs turn min(NaN, 32) into a white-hot 32.

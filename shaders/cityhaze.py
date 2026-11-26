@@ -56,9 +56,9 @@ HAZE_DEFAULTS = dict(
     AmbientDay=0.9,        # physical ambient scattering in daylight
     AmbientNight=0.05,     # ... kept low after dark so the air stays dark and the colour comes from
     Glow=0.011,            #     the city glow, in exposed units
-    Neon=180.0,            # neon halo gain
-    Beam=2.5,              # headlight shaft gain
-    Lamp=25.0,             # street-lamp halo gain
+    Neon=0.0,              # neon sign halos in the air: off (they read as saturated pink / cyan blobs)
+    Beam=1.5,              # headlight shaft gain
+    Lamp=12.0,             # street-lamp halo gain
     Emitter=1.0,
     Steps=12,
 )

@@ -35,6 +35,7 @@ from .map_draw import destination_pin, place_symbol, route_stroke
 from ..world.places import scene_places
 
 CARD_W, CARD_H = 244.0, 176.0
+MAP_GLYPH = (0.94, 0.96, 0.99, 0.96)   # monochrome place markers on the minimap
 MAP_RADIUS = 250.0
 PITCH = math.radians(52.0)
 DISTANCE = 172.0
@@ -45,13 +46,15 @@ CELL = 0.6
 MIN_ROOF_AREA = 4.0
 MIN_BUILDING_AREA = 16.0
 
-# Apple-Maps dark palette: graphite blocks, light asphalt, blue-black ground.
-BG_TOP = (0.082, 0.095, 0.115, 1.0)
-BG_BOTTOM = (0.042, 0.051, 0.066, 1.0)
-BLOCK = np.array((0.250, 0.268, 0.300), np.float32)
-ROAD_MINOR = np.array((0.170, 0.190, 0.225), np.float32)
-ROAD_MAJOR = np.array((0.330, 0.360, 0.410), np.float32)
-FOG = np.array((0.045, 0.055, 0.072), np.float32)
+# GTA-style frosted palette: graphite blocks, light asphalt, and a translucent
+# blue-black ground so the blurred scene shows faintly through the map itself.
+BG_TOP = (0.095, 0.105, 0.128, 0.52)
+BG_BOTTOM = (0.042, 0.048, 0.062, 0.60)
+MAP_ALPHA = 0.92            # footprints keep a hint of the frost underneath
+BLOCK = np.array((0.355, 0.375, 0.415), np.float32)
+ROAD_MINOR = np.array((0.240, 0.262, 0.300), np.float32)
+ROAD_MAJOR = np.array((0.470, 0.492, 0.540), np.float32)
+FOG = np.array((0.060, 0.070, 0.090), np.float32)
 
 _SKIP_ROADS = frozenset((
     "footway", "pedestrian", "path", "steps", "cycleway", "bridleway",
@@ -172,6 +175,8 @@ class MinimapPanel:
         self._cam = None
         self._focus_px = None
         self._place_hits = []
+        self._scene_cache = None
+        self._places_cache = None
 
     # ------------------------------------------------------------------ layout
     def layout(self, w, h, status_h=0.0):
@@ -260,8 +265,15 @@ class MinimapPanel:
         self._rect = rect
         x, y, cw, ch = rect
         hover = ui.anim(("minimap", "hover"), float(_in(rect, *mouse)), 16.0)
-        ui.box(x, y, cw, ch, 0, None, None, shadow=18.0, shadow_dy=4.0, shadow_alpha=0.30)
-        ui.box(x, y, cw, ch, 0, fill=(BG_TOP, BG_BOTTOM))
+        radius = 18.0
+        frost = getattr(ui, "frost", None)
+        if frost is not None:
+            frost(x, y, cw, ch, radius, 0.94)
+        ui.box(x, y, cw, ch, radius, None, None, shadow=26.0, shadow_dy=10.0, shadow_alpha=0.42)
+        # Rounded window: the map is drawn through a rounded clip, so its own
+        # corners never poke past the glass card.
+        ui.push_clip(x, y, cw, ch)
+        ui.box(x, y, cw, ch, radius, fill=(BG_TOP, BG_BOTTOM))
 
         cam = self._camera(focus, heading, rect)
         self._cam = cam
@@ -271,7 +283,7 @@ class MinimapPanel:
 
         verts, colors = self._batch(scene, focus, heading, rect, cam)
         if len(verts):
-            ui.triangles(verts, colors, clip=rect, clip_radius=0)
+            ui.triangles(verts, colors, clip=rect, clip_radius=radius)
 
         if navigation is not None and navigation.route is not None:
             points = navigation.route.tail(navigation.progress)
@@ -284,26 +296,48 @@ class MinimapPanel:
 
         self._puck(ui, self._focus_px[0], self._focus_px[1])
         self._chrome(ui, rect, heading, hover)
+        ui.pop_clip()
         border = T.BORDER_EMPHASIZED if hover > 0.5 else T.BORDER_DEFAULT
-        ui.box(x, y, cw, ch, 0, fill=None, border=border, bw=1.0)
+        ui.box(x, y, cw, ch, radius, fill=None, border=border, bw=1.0)
+        ui.box(x + 22, y + 0.5, cw - 44, 1.0, 0.5, (1.0, 1.0, 1.0, 0.10))
 
     def _places(self, ui, scene, focus, rect, cam, mouse, navigation):
         places = scene_places(scene)
         if not places: return
         x, y, w, h = rect
-        candidates = sorted((p for p in places if math.hypot(p.x - focus[0], p.y - focus[1]) < MAP_RADIUS + 60.),
-                            key=lambda p: (math.hypot(p.x - focus[0], p.y - focus[1]), p.key))
+        fx, fy = float(focus[0]), float(focus[1])
+        reach = MAP_RADIUS + 60.
+        # Place coordinates are packed once per residency generation: a Python
+        # distance loop over every place in the city ran on every frame.
+        cached = self._places_cache
+        if cached is None or cached[0] is not places:
+            cached = self._places_cache = (
+                places, np.asarray([(p.x, p.y) for p in places], np.float32))
+        positions = cached[1]
+        px = positions[:, 0] - np.float32(fx)
+        py = positions[:, 1] - np.float32(fy)
+        near = np.flatnonzero(px * px + py * py < reach * reach)
+        if len(near) == 0:
+            return
+        nearby = sorted(((math.hypot(places[i].x - fx, places[i].y - fy), places[i].key, i)
+                         for i in near), key=lambda item: (item[0], item[1]))
+        indices = [item[2] for item in nearby]
+        candidates = [places[i] for i in indices]
+        if not candidates:
+            return
+        # One projection for every candidate: projecting them one at a time spent
+        # milliseconds in numpy call overhead with hundreds of places on screen.
+        screen, depths = self._project_flat(positions[indices], cam)
         occupied = [(self._focus_px[0] - 21, self._focus_px[1] - 24, 42., 42.)]
         labels = 0
-        for place in candidates:
+        for index, place in enumerate(candidates):
             if navigation is not None and navigation.destination is not None and place.key == navigation.destination.key:
                 continue
-            point, depth = self._project_flat(np.asarray(place.position, np.float32)[None], cam)
-            cx, cy = map(float, point[0])
-            if depth[0] <= 1. or not (x + 14 < cx < x + w - 14 and y + 37 < cy < y + h - 32):
+            cx, cy = float(screen[index, 0]), float(screen[index, 1])
+            if depths[index] <= 1. or not (x + 14 < cx < x + w - 14 and y + 37 < cy < y + h - 32):
                 continue
             if any(_in(r, cx, cy) for r in occupied): continue
-            place_symbol(ui, cx, cy, place.category, 7.)
+            place_symbol(ui, cx, cy, place.category, 7., mono=MAP_GLYPH)
             label_rect = None
             hover = math.hypot(mouse[0] - cx, mouse[1] - cy) <= 12.
             if labels < 3 or hover:
@@ -396,51 +430,65 @@ class MinimapPanel:
             pass
         return result
 
-    def _batch(self, scene, focus, heading, rect, cam=None):
-        x, y, w, h = rect
-        cam = cam if cam is not None else self._camera(focus, heading, rect)
-        empty = (np.empty((0, 2), np.float32), np.empty((0, 4), np.float32))
+    def _scene_arrays(self, scene):
+        """Every resident tile's flat geometry merged into one set of arrays.
+
+        Resident tiles are immutable once published, so the merge is cached and
+        only redone when the tile set changes.  Doing it per frame meant a
+        Python-level pass over every tile on every single frame.
+        """
         tiles = getattr(scene, "tiles", None) if scene is not None else None
         if not tiles:
+            return None
+        key = tuple((k, id(v)) for k, v in tiles.items())
+        cached = self._scene_cache
+        if cached is not None and cached[0] is scene and cached[1] == key:
+            return cached[2]
+        parts = [geo for geo in (self._flat(placed) for placed in tiles.values())
+                 if geo is not None]
+        merged = None
+        if parts:
+            merged = (np.concatenate([p[0] for p in parts], axis=0),
+                      np.concatenate([p[1] for p in parts]),
+                      np.concatenate([p[2] for p in parts]),
+                      np.concatenate([p[3] for p in parts], axis=0))
+        self._scene_cache = (scene, key, merged)
+        return merged
+
+    def _batch(self, scene, focus, heading, rect, cam=None):
+        x, y, w, h = rect
+        empty = (np.empty((0, 2), np.float32), np.empty((0, 4), np.float32))
+        merged = self._scene_arrays(scene)
+        if merged is None:
+            return empty
+        tris, kind, tint, centres = merged
+        if len(tris) == 0:
             return empty
 
-        focus_xy = np.asarray(focus[:2], np.float64)
+        # One radius test for the whole scene, not one per tile.
         reach = MAP_RADIUS + 60.0
-        tris, kind, tint = [], [], []
-        for placed in tiles.values():
-            geo = self._flat(placed)
-            if geo is None:
-                continue
-            t, k, sh, centres = geo
-            near = np.hypot(centres[:, 0] - focus_xy[0],
-                            centres[:, 1] - focus_xy[1]) <= reach
-            if not near.any():
-                continue
-            tris.append(t[near])
-            kind.append(k[near])
-            tint.append(sh[near])
-        if not tris:
-            return empty
+        dx = centres[:, 0] - np.float32(focus[0])
+        dy = centres[:, 1] - np.float32(focus[1])
+        near = dx * dx + dy * dy <= reach * reach
+        if not near.all():
+            idx = np.flatnonzero(near)
+            if len(idx) == 0:
+                return empty
+            tris, kind, tint = tris[idx], kind[idx], tint[idx]
 
-        tris = np.concatenate(tris, axis=0)
-        kind = np.concatenate(kind)
-        tint = np.concatenate(tint)
+        cam = cam if cam is not None else self._camera(focus, heading, rect)
         screen, depth = self._project_flat(tris, cam)
-        finite = np.isfinite(screen).all(axis=(1, 2))
-        if not finite.all():
-            tris, screen, depth = tris[finite], screen[finite], depth[finite]
-            kind, tint = kind[finite], tint[finite]
-        if len(tris) == 0:
-            return empty
-
         sx, sy = screen[:, :, 0], screen[:, :, 1]
-        inside = ((sx.max(axis=1) >= x - 24) & (sx.min(axis=1) <= x + w + 24)
-                  & (sy.max(axis=1) >= y - 24) & (sy.min(axis=1) <= y + h + 24))
-        if not inside.all():
-            tris, screen, depth = tris[inside], screen[inside], depth[inside]
-            kind, tint = kind[inside], tint[inside]
-        if len(tris) == 0:
-            return empty
+        # Off-screen and non-finite faces go in one mask, so there is only ever
+        # one gather instead of a copy per rejection stage.
+        keep = (np.isfinite(screen).all(axis=(1, 2))
+                & (sx.max(axis=1) >= x - 24) & (sx.min(axis=1) <= x + w + 24)
+                & (sy.max(axis=1) >= y - 24) & (sy.min(axis=1) <= y + h + 24))
+        if not keep.all():
+            idx = np.flatnonzero(keep)
+            if len(idx) == 0:
+                return empty
+            screen, depth, kind, tint = screen[idx], depth[idx], kind[idx], tint[idx]
 
         # colours ------------------------------------------------------------
         base = np.empty((len(kind), 3), np.float32)
@@ -449,40 +497,43 @@ class MinimapPanel:
         base[kind == 2] = ROAD_MAJOR
         colour = base * tint[:, None]
         fade = np.clip((depth.mean(axis=1) - 55.0) / (MAP_RADIUS * 1.7), 0.0, 1.0)[:, None] * 0.85
-        colour = colour * (1.0 - fade) + FOG[None, :] * fade
+        colour *= (1.0 - fade)
+        colour += FOG[None, :] * fade
 
         colours = np.empty((len(kind), 3, 4), np.float32)
         colours[:, :, :3] = colour[:, None, :]
-        colours[:, :, 3] = 1.0
+        colours[:, :, 3] = MAP_ALPHA
         # Roads first so blocks paint over the ribbons that run beneath them.
-        order = np.argsort(-kind, kind="stable")
-        return (screen[order].reshape(-1, 2).astype(np.float32, copy=False),
-                colours[order].reshape(-1, 4))
+        # A stable partition by kind is all the ordering this needs; kind is
+        # 0/1/2, so a full argsort every frame was pure overhead.
+        if kind.size and (kind != 0).any():
+            order = np.concatenate((np.flatnonzero(kind == 2),
+                                    np.flatnonzero(kind == 1),
+                                    np.flatnonzero(kind == 0)))
+            screen, colours = screen[order], colours[order]
+        return (screen.reshape(-1, 2).astype(np.float32, copy=False),
+                colours.reshape(-1, 4))
 
     # ------------------------------------------------------------------ chrome
     def _puck(self, ui, cx, cy):
-        pulse = 0.5 + 0.5 * math.sin(getattr(ui, "now", 0.0) * 2.6)
-        ui.circle(cx, cy, 12.0 + 2.0 * pulse, (0.04, 0.50, 1.0, 0.16 + 0.10 * pulse))
-        ui.tri((cx, cy - 17.0), (cx - 5.5, cy - 5.0), (cx + 5.5, cy - 5.0),
-               (0.10, 0.56, 1.0, 0.92))
-        ui.circle(cx, cy, 7.2, (1.0, 1.0, 1.0, 1.0))
-        ui.circle(cx, cy, 5.1, (0.03, 0.47, 1.0, 1.0))
+        """Apple Maps location puck: a soft pulse, a white halo and a blue heading arrow."""
+        pulse = 0.5 + 0.5 * math.sin(getattr(ui, "now", 0.0) * 2.2)
+        ui.circle(cx, cy, 16.0 + 5.0 * pulse, (0.04, 0.50, 1.0, 0.10 - 0.05 * pulse))
+        ui.box(cx - 8, cy - 8, 16, 16, 8, None, None, shadow=10.0, shadow_dy=2.0, shadow_alpha=0.40)
+        ui.circle(cx, cy, 8.0, (1.0, 1.0, 1.0, 1.0))
+        ui.circle(cx, cy, 6.0, (0.039, 0.518, 1.0, 1.0))
+        ui.tri((cx, cy - 12.0), (cx - 4.0, cy - 4.0), (cx + 4.0, cy - 4.0),
+               (1.0, 1.0, 1.0, 0.95))
 
     def _chrome(self, ui, rect, heading, hover):
         x, y, w, h = rect
-        # 2D badge: flat ground plane, only the camera is perspective.
-        ui.box(x + 12, y + 12, 32, 20, 0, (0.0, 0.0, 0.0, 0.40))
-        ui.text_c("2D", x + 28, y + 22, T.T_CAPTION, T.TEXT_SECONDARY,
-                  anchor="center", weight="semibold")
-        # compass
-        cx, cy = x + w - 26, y + 24
-        ui.circle(cx, cy, 12.5, (0.0, 0.0, 0.0, 0.40))
-        ui.ring(cx, cy, 12.5, 1.0, (1.0, 1.0, 1.0, 0.18), seg=20)
+        # compass — a monochrome needle, no colour accent
+        cx, cy = x + w - 28, y + 26
+        ui.box(cx - 13, cy - 13, 26, 26, 13, (0.02, 0.03, 0.05, 0.34), (1.0, 1.0, 1.0, 0.16))
         vx, vy = -math.cos(heading), -math.sin(heading)
-        ui.line(cx, cy, cx + vx * 8.5, cy + vy * 8.5, 2.0, (1.0, 1.0, 1.0, 0.92))
-        ui.circle(cx + vx * 8.5, cy + vy * 8.5, 2.2, (1.0, 0.32, 0.28, 1.0))
-        ui.text_c("N", cx + vx * 9.5, cy + vy * 9.5 - 0.5, T.T_CAPTION,
-                  (1.0, 1.0, 1.0, 0.95), anchor="center", weight="semibold")
+        ui.tri((cx + vx * 9.0, cy + vy * 9.0), (cx - vy * 4.6 - vx * 4.0, cy + vx * 4.6 - vy * 4.0),
+               (cx + vy * 4.6 - vx * 4.0, cy - vx * 4.6 - vy * 4.0), (1.0, 1.0, 1.0, 0.96))
+        ui.circle(cx, cy, 2.0, (1.0, 1.0, 1.0, 0.95))
 
         # scale bar, picked from a nice round distance that fits the card
         px_per_m = self._cam["focal"] / DISTANCE if self._cam else 1.0
@@ -497,9 +548,12 @@ class MinimapPanel:
                 weight="medium")
 
         if hover > 0.5:
-            ui.box(x + 12, y + h - 32, 84, 22, 0, fill=(0.0, 0.0, 0.0, 0.55))
-            ui.text_c("Open map", x + 54, y + h - 21, T.T_CAPTION,
-                      T.TEXT_PRIMARY, anchor="center", weight="medium")
+            k = min(1.0, (hover - 0.5) * 2.0)
+            bw = 96
+            ui.box(x + (w - bw) / 2, y + h - 38, bw, 26, 13, (1.0, 1.0, 1.0, 0.18 * k),
+                   (1.0, 1.0, 1.0, 0.14 * k))
+            ui.text_c("Open map", x + w / 2, y + h - 25, T.T_CAPTION_2,
+                      (1.0, 1.0, 1.0, 0.95 * k), anchor="center", weight="semibold")
 
 
 def _road_geometry(placed, origin, scale):

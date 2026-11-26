@@ -8,7 +8,7 @@
   straight link across the junction), lets them idle, phone, text, open umbrellas in the
   rain, glance at the player, sidestep each other and run from fast cars.
 * Every person is generated from one integer seed: appearance (palette indices, hair,
-  height, accessories) and a ctOS-style profile (``identity_for``).
+  height, accessories).
 
 The crowd only produces a (N, 24) float32 instance array; drawing is
 ``pedestrian_renderer.PedestrianRenderer``.
@@ -43,70 +43,6 @@ PEDESTRIAN_WAYS = frozenset(("pedestrian", "living_street", "footway", "path", "
 NO_SIDEWALK = frozenset(("motorway", "motorway_link"))
 
 WALK, IDLE, PANIC = 0, 1, 2
-
-# ---------------------------------------------------------------------------------------
-# Procedural identity (the ctOS profiler card)
-# ---------------------------------------------------------------------------------------
-_FIRST = ("Dani", "Marcus", "Priya", "Tomas", "Aiko", "Jonah", "Lena", "Omar", "Chloe", "Rafael", "Mei", "Gareth",
-          "Nadia", "Felix", "Isla", "Kofi", "Sasha", "Ravi", "Elena", "Mateo", "Hana", "Declan", "Amara", "Viktor",
-          "Zoe", "Arjun", "Carmen", "Niall", "Yuki", "Leila", "Tobias", "Imani", "Bruno", "Sofia", "Kenji", "Maya",
-          "Anton", "Rosa", "Idris", "Greta", "Pablo", "Noor", "Callum", "Ingrid", "Devon", "Thea", "Samir", "Wren",
-          "Luca", "Farah", "Jasper", "Ines", "Haruto", "Mina", "Dmitri", "Abby", "Tariq", "Lucia", "Evan", "Bao")
-_LAST = ("Sagalla", "Okafor", "Lindqvist", "Moreau", "Tanaka", "Haddad", "Brennan", "Castillo", "Novak", "Reyes",
-         "Whitaker", "Ibrahim", "Kowalski", "Mendes", "Park", "Rossi", "Abara", "Fitzgerald", "Chen", "Duarte",
-         "Petrov", "Holloway", "Nakamura", "Santos", "Vance", "Aydin", "Larsen", "Mukherjee", "Quinn", "Delgado",
-         "Fraser", "Osei", "Varga", "Ito", "Bianchi", "Eriksen", "Navarro", "Sato", "Kapoor", "Beaumont",
-         "Zielinski", "Adeyemi", "McAllister", "Ferreira", "Hollis", "Yilmaz", "Rahman", "Thorne", "Marlowe", "Cruz")
-_TRAITS = ("Habitual procrastinator", "Chronic insomniac", "Aspiring novelist", "Coffee addict", "Compulsive over-sharer",
-           "Cat person", "Perpetual optimist", "Karaoke champion", "Vinyl collector", "Always runs late",
-           "Gym regular", "Online shopping addict", "Night owl", "Amateur chef", "Chess hustler", "Light sleeper",
-           "Reality TV devotee", "Weekend hiker", "Serial hobbyist", "Pun enthusiast", "Podcast binger",
-           "Crossword fanatic", "Plant parent", "Overthinker", "Impulse buyer", "Early riser", "Lapsed guitarist",
-           "Loyal to one barista", "Hates Mondays", "Conspiracy-curious")
-_JOBS = (("Registered Nurse", 54000, 91000), ("Line Cook", 26000, 41000), ("Software Developer", 68000, 150000),
-         ("Barista", 21000, 33000), ("Bike Courier", 22000, 38000), ("Accountant", 52000, 96000),
-         ("High School Teacher", 41000, 79000), ("Electrician", 47000, 88000), ("Graphic Designer", 38000, 82000),
-         ("Paralegal", 42000, 74000), ("Bus Driver", 36000, 62000), ("Warehouse Supervisor", 39000, 66000),
-         ("Pharmacist", 98000, 135000), ("Journalist", 34000, 78000), ("Retail Associate", 20000, 34000),
-         ("Architect", 61000, 120000), ("Paramedic", 38000, 72000), ("Data Analyst", 58000, 110000),
-         ("Dental Hygienist", 62000, 98000), ("Lab Technician", 36000, 68000), ("Taxi Dispatcher", 28000, 47000),
-         ("Property Manager", 45000, 92000), ("Physiotherapist", 58000, 99000), ("Sound Engineer", 33000, 86000),
-         ("Librarian", 38000, 68000), ("Hotel Concierge", 27000, 49000), ("Delivery Driver", 24000, 43000),
-         ("Mechanic", 34000, 69000), ("Marketing Manager", 62000, 125000), ("Freelance Photographer", 18000, 72000),
-         ("Postal Worker", 40000, 64000), ("Chef de Partie", 32000, 58000), ("City Planner", 58000, 104000),
-         ("Event Coordinator", 36000, 70000), ("Translator", 32000, 76000), ("Building Inspector", 52000, 90000))
-
-
-@dataclass
-class Identity:
-    surname: str
-    given: str
-    trait: str
-    age: int
-    occupation: str
-    income: int
-    seed: int
-
-    @property
-    def name(self):
-        return f"{self.surname}, {self.given}"
-
-    @property
-    def income_text(self):
-        return f"${self.income:,}"
-
-
-def identity_for(seed, age, student=False):
-    """Deterministic fictional profile for a person seed. Quirks only; nothing sensitive."""
-    rng = random.Random(int(seed) * 2654435761 % (2 ** 32))
-    if student:
-        job, lo, hi = "University Student", 6000, 19000
-    else:
-        job, lo, hi = rng.choice(_JOBS)
-    t = (rng.random() + rng.random()) * .5
-    income = int(round((lo + (hi - lo) * t) / 500.) * 500)
-    return Identity(rng.choice(_LAST), rng.choice(_FIRST), rng.choice(_TRAITS), int(age), job, income, int(seed))
-
 
 # ---------------------------------------------------------------------------------------
 # Sidewalk network
@@ -415,9 +351,6 @@ class PedestrianCrowd:
         p.tx, p.ty = self._tangent(p)
         p.heading = math.atan2(p.ty, p.tx)
         return p
-
-    def identity(self, ped):
-        return identity_for(ped.seed, ped.age, ped.student)
 
     @staticmethod
     def _locate(p):

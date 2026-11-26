@@ -105,7 +105,7 @@ class Camera:
     CHASE_DIST = 6.2        # metres behind the pivot (scaled by vehicle length)
     CHASE_ELEV = math.radians(11.0)
 
-    # on-foot rig (over-the-shoulder, Watch Dogs style): the character sits left of centre
+    # on-foot rig (over-the-shoulder): the character sits left of centre
     WALK_DIST = 2.9
     WALK_ELEV = math.radians(9.0)
     WALK_SHOULDER = 0.55    # metres the rig is shifted to the character's right

@@ -140,7 +140,7 @@ uniform vec2 uResolution;
 uniform float uNight;
 uniform float uTime;
 uniform float uGrade;           // look strength 0..1
-uniform int   uLook;            // 0 neutral, 1 Colorful, 2 Cinematic, 3 Cyberpunk
+uniform int   uLook;            // 0 neutral, 1 Colorful, 2 Cinematic, 3 Cyberpunk, 4 Natural
 uniform float uHdrIn;           // 1: scene is linear HDR, tone-map here
 uniform float uEVComp;
 uniform float uAEOn;
@@ -358,9 +358,30 @@ vec3 cyberGrade(vec3 c, float night) {
     return clamp(c, 0.0, 1.0);
 }
 
+// ------------------------------------------------------- Natural
+// What a good camera does and nothing more: a gentle S-curve for depth, highlights that roll off
+// towards white instead of clipping into saturated colour, a touch of vibrance for muted
+// materials, and the faintest cool-shadow / warm-light separation.  No lifted or tinted blacks,
+// no hue rotation: sky stays blue, overcast stays grey, lamps keep their own colour.
+vec3 naturalGrade(vec3 c, float night) {
+    c = clamp(c, 0.0, 1.0);
+    float l = dot(c, LUMA);
+    c = mix(c, c * c * (3.0 - 2.0 * c), 0.16);
+    float hi = smoothstep(0.60, 1.0, l);
+    c = mix(c, vec3(dot(c, LUMA)), hi * 0.30);
+    float l2 = dot(c, LUMA);
+    float chroma = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+    c = mix(vec3(l2), c, 1.0 + 0.08 * (1.0 - clamp(chroma * 2.5, 0.0, 1.0)));
+    float sh = 1.0 - smoothstep(0.0, 0.45, l);
+    c *= mix(vec3(1.0), vec3(0.985, 1.0, 1.02), sh * 0.55 * (1.0 - 0.5 * night));
+    c *= mix(vec3(1.0), vec3(1.02, 1.0, 0.985), hi * 0.35 * (1.0 - night));
+    return clamp(c, 0.0, 1.0);
+}
+
 vec3 look(vec3 c) {
     if (uGrade <= 0.0 || uLook == 0) return c;
-    vec3 g = (uLook == 3) ? cyberGrade(c, uNight) : (uLook == 2) ? matrixGrade(c, uNight) : gtaGrade(c, uNight);
+    vec3 g = (uLook == 4) ? naturalGrade(c, uNight)
+           : (uLook == 3) ? cyberGrade(c, uNight) : (uLook == 2) ? matrixGrade(c, uNight) : gtaGrade(c, uNight);
     return mix(c, g, uGrade);
 }
 
@@ -421,7 +442,7 @@ void main() {
     // 35 mm grain, strongest in the mid-tones
     float gr = gradeHash(gl_FragCoord.xy + fract(uTime) * 61.0) - 0.5;
     float l = dot(col, LUMA);
-    float grain = (uLook >= 2) ? 0.010 : 0.022;
+    float grain = (uLook == 4) ? 0.006 : (uLook >= 2) ? 0.010 : 0.022;
     col += gr * grain * uGrade * (1.0 - abs(l * 2.0 - 1.0) * 0.6);
 
     // cinematic vignette: aspect-corrected oval (0 at the centre, 1 at the corners), an
@@ -593,5 +614,144 @@ void main() {
     acc /= wsum;
     if (uSharp > 0.0) acc = acc * acc / (acc + uSharp);
     FragColor = vec4(acc * uGain, 1.0);
+}
+"""
+
+
+# Dedicated sun flare, drawn at 1/4 resolution from the sun's frame position.
+# Unlike STAR_FS (which finds every bright pixel), this is the physical lens
+# response to the sun: a hot disc, chromatic halo, hexagonal aperture ghosts on
+# the sun->centre axis, a rainbow comet and the horizontal anamorphic streak.
+# The depth buffer gates it when a building hides the sun.
+SUN_FLARE_FS = """
+#version 330 core
+in vec2 vUV;
+uniform sampler2D uDepth;
+uniform vec2 uSunUV;          // may lie just outside 0..1
+uniform float uSunFlare;      // strength: sun visibility * intensity * user gain
+uniform vec3 uSunTint;
+uniform float uAspect;
+uniform float uNight;
+uniform float uTime;
+uniform float uGhostGain;
+uniform float uStreakGain;
+out vec4 FragColor;
+""" + SCENE_DEPTH + """
+const float TAU = 6.2831853;
+
+float sq(float x) { return x * x; }
+
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * .1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+float skyAt(vec2 uv) {
+    uv = clamp(uv, vec2(0.001), vec2(0.999));
+    return depthSky(texture(uDepth, uv).r) ? 1.0 : 0.0;
+}
+
+// The sun disc is hidden by geometry, but a few taps around it let a partial
+// occlusion keep a little veiling glare instead of snapping the flare off.
+float sunVisibility() {
+    vec2 beyond = max(max(-uSunUV, uSunUV - 1.0), vec2(0.0));
+    float outside = max(beyond.x, beyond.y);
+    if (outside > 0.0) return 1.0 - smoothstep(0.0, 0.45, outside);
+    float s = 3.0 * skyAt(uSunUV);
+    for (int i = 0; i < 8; ++i) {
+        float a = 0.7853982 * float(i);
+        vec2 o = vec2(cos(a) / uAspect, sin(a));
+        s += skyAt(uSunUV + o * 0.012) + 0.75 * skyAt(uSunUV + o * 0.035);
+    }
+    float v = s / 17.0;
+    return v * v * (3.0 - 2.0 * v);
+}
+
+float hexDist(vec2 p) {
+    p = abs(p);
+    return max(dot(p, vec2(0.8660254, 0.5)), p.y);
+}
+
+float hexMask(vec2 p, float radius, float soft) {
+    float d = hexDist(p / max(radius, 1e-5));
+    return 1.0 - smoothstep(1.0 - soft, 1.0 + soft, d);
+}
+
+float ring(float r, float radius, float width) {
+    float x = (r - radius) / max(width, 1e-5);
+    return exp(-x * x);
+}
+
+void main() {
+    if (uSunFlare <= 0.0) { FragColor = vec4(0.0); return; }
+    float vis = sunVisibility();
+    if (vis <= 0.0) { FragColor = vec4(0.0); return; }
+    float asp = uAspect;
+    vec2 d = (vUV - uSunUV) * vec2(asp, 1.0);
+    float r = length(d);
+    vec3 col = vec3(0.0);
+
+    // Hot disc and halos.  The sky already draws the sun itself; this is the
+    // sensor/lens bloom around it, so the core is wide and soft.
+    float core = exp(-r * r / (2.0 * 0.0075 * 0.0075));
+    float inner = exp(-r / 0.045);
+    float halo = exp(-r / 0.16);
+    float wide = 1.0 / (1.0 + sq(r / 0.42));
+    col += uSunTint * (3.2 * core + 1.4 * inner + .42 * halo + .10 * wide);
+
+    // Chromatic halo rings: glass elements split the white sun into a rainbow.
+    float ring_r = ring(r, .085, .010) + .55 * ring(r, .135, .016);
+    vec3 rainbow = .5 + .5 * cos(TAU * (vec3(0.0, .33, .67) + r * 7.0 + uTime * .01));
+    col += rainbow * ring_r * .55;
+    col += vec3(.35, .65, 1.0) * ring(r, .26, .030) * .12;
+
+    // Aperture ghosts: hexagons mirrored through the frame centre along the
+    // sun->centre axis.  Chromatic dispersion grows with distance from the sun.
+    vec2 axis = vec2(0.5) - uSunUV;
+    for (int i = 1; i <= 5; ++i) {
+        float fi = float(i);
+        vec2 gc = uSunUV + axis * (.48 + fi * .34);
+        vec2 gd = (vUV - gc) * vec2(asp, 1.0);
+        float radius = .022 + .012 * fi;
+        float soft = .10 + .04 * fi;
+        float split = .0025 * fi;
+        vec3 gm = vec3(
+            hexMask(gd + vec2(split, 0.0), radius * 1.01, soft),
+            hexMask(gd, radius, soft),
+            hexMask(gd - vec2(split, 0.0), radius * .99, soft));
+        float gain = .16 / (1.0 + .55 * fi);
+        vec3 tint = i == 1 ? vec3(1.0, .62, .30)
+                  : i == 2 ? vec3(.42, .78, 1.0)
+                  : i == 3 ? vec3(.80, .55, 1.0)
+                  : i == 4 ? vec3(.55, 1.0, .62)
+                           : vec3(1.0, .85, .45);
+        float rim = smoothstep(.62, .96, hexDist(gd / radius));
+        col += tint * gm * gain * uGhostGain * (.35 + .65 * rim);
+    }
+
+    // Rainbow comet: a stretched, prism-smeared ghost between sun and centre.
+    vec2 cc = uSunUV + axis * .70;
+    vec2 cd = (vUV - cc) * vec2(asp, 1.0);
+    float comet = exp(-sq(cd.x / .045)) * exp(-sq(cd.y / .16));
+    col += rainbow * comet * .12 * uGhostGain;
+
+    // Anamorphic streak: the horizontal blue line of a cinema lens.  It fades
+    // with distance from the sun's row but reaches across the frame.
+    float streak = exp(-abs(d.y) / .012) * exp(-abs(d.x) / .95);
+    col += vec3(.35, .62, 1.0) * streak * .55 * uStreakGain;
+
+    // Faint hexagonal iris outline.
+    float iris = 1.0 - smoothstep(0.0, .0035, abs(hexDist(d) - .19));
+    col += uSunTint * iris * .045;
+
+    // Sparse lens grime, visible only where the flare illuminates the glass.
+    float dirt = hash12(floor(vUV * vec2(asp, 1.0) * 90.0) + floor(uTime * .02));
+    dirt = smoothstep(.82, .98, dirt) * .06;
+    col += uSunTint * dirt * exp(-r / .5);
+
+    col *= uSunFlare * vis;
+    col *= 1.0 - .55 * uNight;   // at night this would read as a lamp, not the sun
+    FragColor = vec4(max(col, vec3(0.0)), 1.0);
 }
 """

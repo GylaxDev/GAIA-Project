@@ -17,6 +17,10 @@ BETA_M = np.array([3.996e-6] * 3)
 BETA_O = np.array([.650e-6, 1.881e-6, .085e-6])
 LUMA = np.array([.2126, .7152, .0722])
 N_VIEW, N_SUN = 20, 6
+# Single scattering over the full 350 km grazing path turns the horizon yellow-green (the blue
+# is gone, the red survives).  Real horizons stay pale because aerosol and multiple scattering
+# whiten them and limit what is visible to roughly 100 km.  Keep GLSL (shaders/atmosphere.py) in sync.
+HORIZON_PATH_CAP = 110000.
 
 
 def smoothstep(a, b, x):
@@ -64,7 +68,7 @@ def twilight_radiance(directions, sun_dir):
 # haze-lit ~1 cd/m2, which is what lets the skyline read as silhouettes against a glowing sky.
 URBAN_ZENITH = (.30, .42, .65)
 URBAN_HORIZON = (.75, .64, .48)
-URBAN_GLOW_GAIN = 6.0
+URBAN_GLOW_GAIN = 4.2
 
 
 def urban_radiance(directions, night, glow):
@@ -93,7 +97,7 @@ def atmosphere_radiance(directions, sun_dir, intensity=1., *, height=100., aeros
     earth_disc = b * b + RE * RE - origin @ origin
     hit = (b < 0.) & (earth_disc >= 0.)
     tmax = np.where(hit, np.minimum(tmax, -b - np.sqrt(np.maximum(earth_disc, 0.))), tmax)
-    tmax = np.clip(tmax, 0., 350000.)
+    tmax = np.clip(tmax, 0., HORIZON_PATH_CAP)
     edges = (np.arange(N_VIEW + 1) / N_VIEW) ** 2
     ds = tmax[:, None] * np.diff(edges)
     mid = tmax[:, None] * ((edges[:-1] + edges[1:]) * .5)

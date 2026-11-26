@@ -177,12 +177,17 @@ void sf_grass(vec2 wp, mat2 dW, float fw,
               out vec3 albedo, out float ao, out vec2 grad) {
     vec4 tile = sf_texture(wp, 0., dW);
     vec3 macro = sf_noised(wp * .026);
-    float dry = smoothstep(.74, .92, macro.x) * .22 + tile.a * .65;
+    // Lawn is never one flat tone: broad lush/thin patches (tens of metres) plus
+    // mid-scale mowing and wear variation (a few metres), both filtered by footprint.
+    float mid = sf_noised(wp * .21 + 4.7).x;
+    float fine = sf_noised(wp * .83 + 9.1).x;
+    float lush = clamp(.5 + (macro.x - .5) * .8 + (mid - .5) * .5 + (fine - .5) * .30 * (1. - smoothstep(.2, 1.2, fw)), 0., 1.);
+    float dry = smoothstep(.82, .97, macro.x) * .10 + tile.a * .30;
     vec3 dk = mix(GRASS_DARK, GRASS_DRY_DARK, dry);
     vec3 lt = mix(GRASS_LIGHT, GRASS_DRY_LIGHT, dry);
-    float t = clamp(tile.r + (macro.x - .5) * .14, 0., 1.);
-    albedo = mix(dk, lt, t);
-    ao = mix(.88, .96, t) * (1. - tile.a * .025);
+    float t = clamp(tile.r * .55 + lush * .45 + (macro.x - .5) * .08, 0., 1.);
+    albedo = mix(dk, lt, t) * vec3(.92, 1.0, .88);   // deep, cool lawn green
+    ao = mix(.86, .96, t) * (1. - tile.a * .025);
     grad = sf_texture_gradient(tile) * .55;
 }
 
@@ -198,11 +203,11 @@ void sf_concrete(vec2 sp, mat2 J, vec2 wp, mat2 dW, vec2 slab, float dist, float
     vec3 mac = sf_fbm(wp, 0.11, 2, fw, 0.5);
     // Separate pours age differently; occasional replacement slabs are lighter.
     // The palette stays neutral and matte, not a bright beige checkerboard.
-    float age = clamp(.38 + mac.x * 1.65 + (tone-.5)*.68, 0., 1.);
-    albedo = mix(vec3(.220, .226, .218), vec3(.373, .365, .341), age);
+    float age = clamp(.46 + mac.x * .85 + (tone-.5)*.26, 0., 1.);
+    albedo = mix(vec3(.248, .258, .256), vec3(.332, .336, .326), age);
     float repair = smoothstep(.89, .94, tone);
-    albedo = mix(albedo, vec3(.405, .402, .378), repair*.75);
-    albedo *= 1. + (tile.r-.5)*.82 - tile.a*.14;
+    albedo = mix(albedo, vec3(.380, .378, .358), repair*.45);
+    albedo *= 1. + (tile.r-.5)*.40 - tile.a*.08;
     rough = .90 + tile.a*.045;
     grad = sf_texture_gradient(tile)*.90 + mac.yz*.004;
 
@@ -214,7 +219,7 @@ void sf_concrete(vec2 sp, mat2 J, vec2 wp, mat2 dW, vec2 slab, float dist, float
     float joint = (1.0 - t * t * (3.0 - 2.0 * t)) * ic;
     albedo *= 1. - .58 * joint;
     float grime = (1.-smoothstep(.012, .11+fw, jd)) * (.11/(.11+fw));
-    float damp = smoothstep(.40, .68, sf_noised(wp*.34 + 8.1).x);
+    float damp = smoothstep(.45, .75, sf_noised(wp*.34 + 8.1).x) * .6;
     albedo = mix(albedo, albedo*vec3(.73, .72, .67), grime*(.22+damp*.30));
     albedo *= 1.-damp*.09*(1.-repair);
     rough = mix(rough, .95, joint);
@@ -268,7 +273,7 @@ void sf_urban(vec2 wp, mat2 dW, float fw, out vec3 albedo, out vec2 grad) {
     vec3 macro = sf_fbm(wp, .065, 2, fw, .5);
     vec4 tile = sf_texture(wp, 2., dW);
     albedo = mix(vec3(.145, .151, .146), vec3(.225, .221, .203), clamp(.5 + macro.x * 1.7, 0., 1.));
-    albedo *= 1.+(tile.r-.5)*.61-tile.a*.11;
-    grad = sf_texture_gradient(tile)*.72;
+    albedo *= 1.+(tile.r-.5)*.34-tile.a*.06;
+    grad = sf_texture_gradient(tile)*.60;
 }
 """)

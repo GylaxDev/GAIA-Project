@@ -87,16 +87,13 @@ class NavigationPanel:
         if w < 520 or h < 380:
             if self.open: self._picker(ui, w, h, mouse)
             return
-        rect = (T.MARGIN, T.MARGIN + 72, 140., 32.)
+        rect = (T.MARGIN, T.MARGIN + 64, 36., 36.)      # a quiet icon button; F6 also opens it
         self._rects["open"] = rect
         hover = spring(ui, ("nav_open",), float(_in(rect, *mouse)), T.SPRING_GENTLE)
         glass(ui, rect[0], rect[1], rect[2], rect[3], rect[3] / 2, "hud")
         if hover > 0.01:
-            ui.box(rect[0] + 2, rect[1] + 2, rect[2] - 4, rect[3] - 4, (rect[3] - 4) / 2, (1.0, 1.0, 1.0, 0.09 * hover))
-        MapsChrome.icon_directions(ui, rect[0] + 19, rect[1] + 16, 16, T.ACCENT_BLUE)
-        ui.text_c("Directions", rect[0] + 38, rect[1] + 16, T.T_BODY, T.TEXT_PRIMARY, weight="semibold")
-        ui.text_c("F6", rect[0] + rect[2] - 14, rect[1] + 16, T.T_CAPTION_2, T.TEXT_TERTIARY, anchor="right",
-                  weight="medium")
+            ui.box(rect[0] + 2, rect[1] + 2, rect[2] - 4, rect[3] - 4, (rect[3] - 4) / 2, (1.0, 1.0, 1.0, 0.10 * hover))
+        MapsChrome.icon_directions(ui, rect[0] + 18, rect[1] + 18, 17, T.TEXT_PRIMARY)
         inset = MinimapPanel().layout(w, h, status_h)
         if navigation.destination is not None and inset is not None:
             guide = (inset[0], inset[1] - 112., inset[2], 104.)

@@ -51,7 +51,7 @@ vec3 atmosphere(vec3 viewDir, vec3 sunDir, float sunIrradiance) {
     float tMax = -b + sqrt(max(0., b * b + outer));
     float earthDisc = b * b + (ATM_RE - camPos.z) * (ATM_RE + camPos.z);
     if (b < 0. && earthDisc >= 0.) tMax = min(tMax, -b - sqrt(earthDisc));
-    tMax = clamp(tMax, 0., 350000.);
+    tMax = clamp(tMax, 0., @PATHCAP@);
     float aerosol = clamp(uAerosolDensity, .1, 8.);
     vec3 optical = vec3(0.), sumR = vec3(0.), sumM = vec3(0.);
     const int N_VIEW = 20, N_SUN = 6;
@@ -107,8 +107,9 @@ vec3 analyticAtmosphere(vec3 dir, vec3 sunDir, vec3 horizon, float intensity) {
 #endif
 """
 
-from ..core.atmosphere import URBAN_ZENITH, URBAN_HORIZON, URBAN_GLOW_GAIN
+from ..core.atmosphere import URBAN_ZENITH, URBAN_HORIZON, URBAN_GLOW_GAIN, HORIZON_PATH_CAP
 ATMOSPHERE = (ATMOSPHERE
               .replace("@ZENITH@", ", ".join(f"{c:.3f}" for c in URBAN_ZENITH))
               .replace("@HORIZON@", ", ".join(f"{c:.3f}" for c in URBAN_HORIZON))
-              .replace("@GAIN@", f"{URBAN_GLOW_GAIN:.3f}"))
+              .replace("@GAIN@", f"{URBAN_GLOW_GAIN:.3f}")
+              .replace("@PATHCAP@", f"{HORIZON_PATH_CAP:.1f}"))

@@ -59,6 +59,11 @@ void main() {
 
     sky += celestialSky(dir, sunDir);
     sky = weatherSky(sky, dir, sunDir);
+    // Under a cloud deck the horizon IS the fog the buildings fade into: blend to exactly that
+    // colour so there is no seam between the far skyline and the sky behind it.
+    float deckAmt = smoothstep(.12, .80, clamp(uCloudCover, 0., 1.));
+    vec3 fogLight = acesInv(pow(max(uFogColor, vec3(0.)), vec3(2.2))) / max(uExposure, 1e-4);
+    sky = mix(sky, fogLight, deckAmt * pow(1. - smoothstep(0., .30, dir.z), 1.6));
 
     vec3 color = sceneOut(sky);
 

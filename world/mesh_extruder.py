@@ -7,7 +7,7 @@ import pickle
 import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 
 import numpy as np
@@ -47,6 +47,9 @@ except ImportError:
     earcut = None
 
 BLDG_STRIDE = 17
+# Exact land-use colour sits just above the terrain facets: below every road
+# ribbon (0.06 m) so streets still cover lawns, but far above depth noise.
+LANDCOVER_LIFT = 0.02
 
 
 @dataclass
@@ -213,11 +216,11 @@ def _tri_normal(p0, p1, p2):
 
 # ================================================================ vehicles
 VEHICLE_SEDAN, VEHICLE_SUV, VEHICLE_COMPACT, VEHICLE_BUS, VEHICLE_TRUCK = range(5)
-VEHICLE_TAXI, VEHICLE_VAN, VEHICLE_GARBAGE, VEHICLE_PICKUP, VEHICLE_X1 = 5, 6, 7, 8, 9
-VEHICLE_KINDS = 10
+VEHICLE_TAXI, VEHICLE_VAN, VEHICLE_PICKUP, VEHICLE_X1 = 5, 6, 7, 8
+VEHICLE_KINDS = 9
 # A 100-slot kerbside mix: ordinary traffic first, then a deliberate 12% of BMW
 # X1 so the model is part of the normal street rather than a rare find.
-_KIND_TABLE = np.array([0]*30 + [1]*13 + [2]*11 + [3]*2 + [4]*2 + [5]*9 + [6]*6 + [7]*2 + [8]*13 + [9]*12,
+_KIND_TABLE = np.array([0]*32 + [1]*13 + [2]*11 + [3]*2 + [4]*2 + [5]*9 + [6]*6 + [7]*13 + [8]*12,
                        np.int32)
 # Real-world fleet colour mix: lots of white / silver / black / grey, a little colour.
 _VEHICLE_PAINTS = np.array([
@@ -419,16 +422,78 @@ class MeshExtruder:
     CROWN_MIN_HEIGHT = 60.0
     SPIRE_MIN_HEIGHT = 85.0
 
+    @staticmethod
+    def sea_piers(buildings, waters=(), hf=None, sea_z=0.0, bbox=None):
+        """Buildings standing in the sea as ``(id, footprint, base_z, top_z)``.
+
+        Bridges crossing one of these must not punch their own piers through
+        it: in the water the building itself is the support.
+        """
+        if not buildings or not waters:
+            return []
+        sea_z = float(sea_z)
+        try:
+            tile = shapely.box(*map(float, bbox)) if bbox is not None else None
+        except Exception:
+            tile = None
+        polys = []
+        for w in waters:
+            try:
+                # Only water that sits at the sea datum: an upland lake is not
+                # a place where a bridge is carried on buildings.
+                if _water_surface(w, hf, sea_z) > sea_z + .5:
+                    continue
+                for p in polygons_of(w):
+                    if p.is_empty or p.area < .5:
+                        continue
+                    if tile is not None:
+                        p = p.intersection(tile)
+                    if not p.is_empty:
+                        polys.append(p)
+            except Exception:
+                continue
+        if not polys:
+            return []
+        try:
+            water = unary_union(polys)
+        except Exception:
+            return []
+        out = []
+        for b in buildings:
+            foot = getattr(b, 'footprint', None)
+            if foot is None or foot.is_empty or foot.area < 1.:
+                continue
+            base = MeshExtruder._ground_elevation(b, hf)
+            try:
+                at_sea = foot.intersection(water).area >= .5 * foot.area
+            except Exception:
+                at_sea = False
+            if not at_sea and hf is not None:
+                # A tile holding only a sliver of coastline still has the sea
+                # bed under a pier building: trust the DEM there.
+                at_sea = base <= sea_z - .4
+            if not at_sea:
+                continue
+            out.append((b.id, foot, base, base + float(b.height)))
+        return out
+
     def build(self, buildings, roads, greens, waters, trees, paths=None,
-              hf=None, bbox=None, sea_z=0.0):
+              hf=None, bbox=None, sea_z=0.0, sea_piers=None):
+        if sea_piers is None:
+            sea_piers = self.sea_piers(buildings, waters, hf, sea_z, bbox)
+            buildings, sea_piers = MeshExtruder.drop_deck_buildings(
+                buildings, roads, hf, bbox, sea_z, sea_piers)
         b_mesh = self._build_buildings(buildings, hf) if buildings else None
         deck_pins = (pedestrian_bridge_pins(roads, hf, sea_z, bbox, buildings)
                      if roads else {})
-        bridges = self._build_bridges(roads, hf, bbox, sea_z, deck_pins) if roads else None
+        bridges = (self._build_bridges(roads, hf, bbox, sea_z, deck_pins, sea_piers)
+                   if roads else None)
         b_mesh = self._merge_meshes(b_mesh, bridges)
         terrain = self._build_terrain(hf, greens, waters, bbox, sea_z)
+        cover = self._build_landcover(greens, waters, hf, bbox)
         roads_mesh = self._build_ground(roads, hf, bbox, sea_z, deck_pins) if roads else None
-        g_mesh = self._merge_meshes(terrain, roads_mesh)
+        g_mesh = self._merge_meshes(terrain, cover)
+        g_mesh = self._merge_meshes(g_mesh, roads_mesh)
         w_mesh = self._build_water(waters, sea_z, hf, bbox=bbox) if waters else None
         tree_hf = hf
         if terrain is not None and trees is not None and len(trees):
@@ -591,7 +656,9 @@ class MeshExtruder:
 
         Only mapped covered passages carve the lower storeys; untagged overlaps
         are not evidence to delete buildings or reroute traffic. The original
-        footprint/roof is retained above the passage clearance.
+        footprint/roof is retained above the passage clearance. Buildings a
+        bridge deck runs through were already removed by
+        :meth:`drop_deck_buildings`.
         """
         from dataclasses import replace
         if hf is not None:
@@ -601,7 +668,8 @@ class MeshExtruder:
         buildings = MeshExtruder._ground_floating_parts(buildings)
         passages = [r for r in roads if r.covered and not r.tunnel
                     and not (r.level is not None and r.level < 0.)]
-        if not passages or not buildings: return buildings
+        if not passages or not buildings:
+            return buildings
         corridors = [r.geometry.buffer(road_width(r) * .5 + .35,
                                        cap_style=2, join_style=2) for r in passages]
         tree = shapely.STRtree(corridors)
@@ -656,6 +724,70 @@ class MeshExtruder:
                 out.extend(replace(b, footprint=poly, min_height=ceiling, layer=1,
                                    ground_elevation=datum, street_details=False) for poly in upper)
         return out
+
+    @staticmethod
+    def drop_deck_buildings(buildings, roads=(), hf=None, bbox=None, sea_z=0.0,
+                            sea_piers=None):
+        """Remove sea buildings that a bridge deck runs through.
+
+        A tower standing in the water with the roadway cutting through it reads
+        as a broken building, and splitting or piercing it leaves a shape that
+        is mapped nowhere.  Such a building is simply not drawn: the deck
+        carries itself on its own piers and pylons there, as it does beside the
+        old shoreline.  Buildings whose roof stays below the deck are kept:
+        they can carry it (see ``_build_bridges``), so their ids also stay in
+        the sea-pier list and the deck keeps its support.  Removed ids leave
+        that list, or the deck would skip a pier where nothing stands.
+        """
+        if not buildings or not sea_piers or not roads:
+            return buildings, sea_piers
+        corridors = []
+        for r in roads:
+            if not (r.bridge or r.layer > 0) or r.tunnel:
+                continue
+            if r.level is not None and r.level < 0.:
+                continue
+            try:
+                width = road_width(r)
+                if width < 1.:
+                    continue
+                corridors.append((r, r.geometry.buffer(width * .5 + .6,
+                                                       cap_style=2, join_style=2)))
+            except Exception:
+                continue
+        if not corridors:
+            return buildings, sea_piers
+        by_id = {entry[0]: entry for entry in sea_piers}
+        removed = set()
+        for b in buildings:
+            if by_id.get(b.id) is None:
+                continue
+            datum = MeshExtruder._ground_elevation(b, hf)
+            roof = datum + float(b.height)
+            for r, corridor in corridors:
+                try:
+                    if not corridor.intersects(b.footprint):
+                        continue
+                    pts = _densify(np.asarray(r.geometry.coords, np.float64), 4.0)
+                    arc, zs = road_profile(pts, r, hf, sea_z, bbox)
+                    if len(arc) < 2:
+                        continue
+                    crossing = corridor.intersection(b.footprint)
+                    if crossing.is_empty:
+                        continue
+                    sample = crossing.representative_point()
+                    arc_at = float(LineString(pts).project(Point(sample.x, sample.y)))
+                    deck = float(np.interp(arc_at, arc, zs))
+                except Exception:
+                    continue
+                if deck - datum <= roof - .5:
+                    removed.add(b.id)
+                    break
+        if not removed:
+            return buildings, sea_piers
+        kept = [b for b in buildings if b.id not in removed]
+        piers = [entry for entry in sea_piers if entry[0] not in removed]
+        return kept, piers
 
     @staticmethod
     def _ground_elevation(b, hf=None):
@@ -1520,32 +1652,6 @@ class MeshExtruder:
             o_out[s0:s0 + 1024] = tx * vy - ty * vx
         return s_out, o_out
 
-    @staticmethod
-    def _paint_materials(gx, gy, greens):
-        """Land-use material id per terrain vertex (5 = generic urban)."""
-        mat = np.full(gx.shape, 5.0, np.float32)
-        polys, mats = [], []
-        for g in greens or ():
-            if g.material not in (1.0, 2.0, 3.0, 4.0): continue
-            for p in polygons_of(g.geometry):
-                if p.is_empty or p.area < 25.0: continue
-                polys.append(p); mats.append(float(g.material))
-        if not polys: return mat
-        flat = mat.reshape(-1)
-        try:
-            arr = np.empty(len(polys), dtype=object); arr[:] = polys
-            tree = shapely.STRtree(arr)
-            pi, gj = tree.query(shapely.points(gx.ravel(), gy.ravel()), predicate="intersects")
-            prio = {1.0: 3.0, 4.0: 2.0, 2.0: 2.0, 3.0: 1.0}
-            best = np.zeros(flat.size, np.float32)
-            for k, j in zip(pi.tolist(), gj.tolist()):
-                m = mats[j]; pr = prio.get(m, 0.0)
-                if pr >= best[k]:
-                    best[k] = pr; flat[k] = m
-        except Exception:
-            pass
-        return mat
-
     def _build_terrain(self, hf, greens, waters, bbox, sea_z, samples=None):
         if bbox is None: return None
         n = max(8, int(samples or TERRAIN_GRID))
@@ -1559,7 +1665,11 @@ class MeshExtruder:
         else:
             H = np.zeros(gx.shape, np.float64)
         H = np.clip(H, sea_z - 500.0, 6000.0)
-        mat = self._paint_materials(gx, gy, greens)
+        # Land-use colour is drawn by an exact land-cover overlay (see
+        # _build_landcover).  Painting the coarse height grid as well smears
+        # every park/beach boundary across one ~23 m cell, which put tan sand
+        # wedges through the boardwalk and lawn edges.
+        mat = np.full(gx.shape, 5.0, np.float32)
         flat_h = H.reshape(-1)
         flat_m = mat.reshape(-1)
         if waters:
@@ -1599,6 +1709,84 @@ class MeshExtruder:
         radius = float(np.max(np.hypot(verts[:, 0], verts[:, 1])))
         return MeshData(verts, idx, np.empty((0, 6), np.float32), radius, float(flat_h.max()))
 
+    # ================================================================ land cover
+    def _build_landcover(self, greens, waters=(), hf=None, bbox=None):
+        """Exact, draped grass/sand/concrete cover, clipped by land-use priority.
+
+        The terrain colour grid only has ~23 m between samples, so a park or a
+        beach drawn into its vertices steps across whole cells.  A beach next
+        to the Mid Beach Boardwalk therefore painted tan wedges through the
+        pavement.  This overlay keeps the source polygon edges exact while
+        staying below every road and sidewalk ribbon.
+        """
+        if bbox is None: return None
+        try:
+            clip = shapely.box(*map(float, bbox))
+            water = unary_union([w.geometry for w in waters]) if waters else None
+        except Exception:
+            return None
+        priority = {1.0: 3.0, 4.0: 2.0, 2.0: 2.0, 3.0: 1.0}
+        entries = []
+        for order, green in enumerate(greens or ()):
+            material = float(green.material)
+            rank = priority.get(material, 0.0)
+            if rank <= 0.: continue
+            for poly in polygons_of(green.geometry):
+                if poly.is_empty or poly.area < 1.0: continue
+                entries.append((rank, order, material, poly))
+        if not entries: return None
+        # Higher rank wins; among equal ranks the later OSM element wins, as
+        # the old vertex painter did.  Paint the winners first, then cut them
+        # out of everything below so boundaries never double-draw.
+        entries.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
+        painted, V, I, nv = None, [], [], 0
+        draper = TerrainDraper(hf)
+        for _, _, material, poly in entries:
+            try:
+                piece = poly.intersection(clip)
+                if water is not None: piece = piece.difference(water)
+                if painted is not None: piece = piece.difference(painted)
+                if piece.is_empty: continue
+                painted = piece if painted is None else unary_union([painted, piece])
+                parts = list(polygons_of(piece))
+            except Exception:
+                continue
+            for part in parts:
+                if part.is_empty or part.area < .05: continue
+                try:
+                    part = orient(part, sign=1.)
+                    ext = _densify(np.asarray(part.exterior.coords, np.float64), 8.0)
+                    rings = [ext] + [_densify(np.asarray(h.coords, np.float64), 8.0)
+                                     for h in part.interiors]
+                    pts, tris = self._triangulate(Polygon(rings[0], rings[1:]))
+                    if len(tris) == 0: continue
+                    if hf is not None:
+                        pts, tris = draper.conform(pts, tris, max_edge=12.)
+                    else:
+                        pts, tris = self._refine_uniform(pts, tris, 45.)
+                except Exception:
+                    continue
+                if len(tris) == 0: continue
+                z = ((np.asarray(hf.at(pts[:, 0], pts[:, 1]), np.float64)
+                      if hf is not None else np.zeros(len(pts), np.float64))
+                     + LANDCOVER_LIFT)
+                xyz = np.c_[pts, z]
+                block = np.zeros((len(pts), BLDG_STRIDE), np.float32)
+                block[:, :3] = xyz
+                block[:, 3:6] = vertex_normals(xyz, tris)
+                block[:, 6] = material
+                block[:, 9] = 1.0
+                block[:, 16] = 5.0
+                V.append(block)
+                I.append(tris.ravel().astype(np.uint32) + np.uint32(nv))
+                nv += len(pts)
+        if not V: return None
+        vertices = np.ascontiguousarray(np.vstack(V), np.float32)
+        indices = np.ascontiguousarray(np.concatenate(I), np.uint32)
+        return MeshData(vertices, indices, np.empty((0, 6), np.float32),
+                        float(np.max(np.hypot(vertices[:, 0], vertices[:, 1]))),
+                        float(vertices[:, 2].max()))
+
     # ================================================================ ground
     def _build_ground(self, roads, hf=None, bbox=None, sea_z=0.0, deck_pins=None):
         V, I = [], []
@@ -1606,9 +1794,8 @@ class MeshExtruder:
         stride = BLDG_STRIDE
         draper = TerrainDraper(hf)
 
-        # Pedestrian surfaces ride 0.10 m above the asphalt to give their kerb
-        # some relief, so a mapped footway or crossing polygon that overlaps a
-        # street painted a pale band across the carriageway and buried the zebra.
+        # Pedestrian surfaces are cut out of every carriageway below, so they
+        # only need a shallow kerb: a tall lift made beach promenades float.
         carriageways = []
         for r in roads:
             if r.highway in PEDESTRIAN_HIGHWAYS: continue
@@ -1719,6 +1906,7 @@ class MeshExtruder:
                         if hf is not None and not (r.bridge or r.layer > 0):
                             cz = np.asarray(hf.at(coords[:, 0], coords[:, 1]),
                                             np.float64) + ROAD_SURFACE + lift
+                        drop = ROAD_SURFACE + lift
                         cbase = nv
                         for j in range(len(coords) - 1):
                             a, b = coords[j], coords[j + 1]
@@ -1731,7 +1919,9 @@ class MeshExtruder:
                             curb[0, 0:2] = a; curb[1, 0:2] = b
                             curb[2, 0:2] = b; curb[3, 0:2] = a
                             curb[0, 2] = za; curb[1, 2] = zb
-                            curb[2, 2] = zb - 0.16; curb[3, 2] = za - 0.16
+                            # Reach the terrain, not just partway: a shallow face
+                            # that stops above the ground reads as a floating lip.
+                            curb[2, 2] = zb - drop; curb[3, 2] = za - drop
                             curb[:, 3] = nx; curb[:, 4] = ny
                             curb[:, 6] = 0.1; curb[:, 7] = width
                             curb[:, 9] = 1.0
@@ -1815,9 +2005,11 @@ class MeshExtruder:
             bottom.append((x, y, z0)); top.append((x, y, z1))
         self._box(V, I, bottom, top, color, style, part)
 
-    def _build_bridges(self, roads, hf=None, bbox=None, sea_z=0.0, deck_pins=None):
+    def _build_bridges(self, roads, hf=None, bbox=None, sea_z=0.0, deck_pins=None,
+                       sea_piers=None):
         V, I = [], []
         towers_seen = set()
+        piers = list(sea_piers or ())
         for r in roads:
             if r.tunnel or not (r.bridge or r.layer > 0): continue
             if r.highway not in ROAD_WIDTHS: continue
@@ -1837,11 +2029,12 @@ class MeshExtruder:
             ln = np.maximum(np.hypot(gx, gy), 1e-6)
             nvec = np.stack([gy / ln, -gx / ln], axis=1)
             tvec = np.stack([gx / ln, gy / ln], axis=1)
-            deck = zs - 0.05
+            deck = zs
             half = width * 0.5
-            # footbridges get a slim slab, roads a proper girder
-            thick = 1.7 if width >= 5.0 else 0.45
-            rail_h = 1.15 if width >= 3.0 else 0.0
+            # every bridge gets a real deck and a railing so small crossings read as
+            # proper bridges instead of thin floating slabs on flat ground
+            thick = 1.7 if width >= 5.0 else 0.8
+            rail_h = 1.15 if width >= 3.0 else 0.9
             steel = _bridge_paint(r)
             concrete = np.array([0.50, 0.49, 0.46], np.float32)
             structure = (r.structure or "").lower()
@@ -1857,6 +2050,22 @@ class MeshExtruder:
                           or any(k in name for k in _SUSPENSION_NAMES)
                           or (over_water and total > 700.0))
             style = np.array([0.37, 4.0, 0.0], np.float32)
+            try:
+                corridor = shapely.LineString(pts).buffer(width * .5 + .6,
+                                                         cap_style=2, join_style=2)
+            except Exception:
+                corridor = None
+
+            def on_pier(x, y, margin=0.6):
+                """The sea building standing at this point, if any."""
+                pt = Point(float(x), float(y))
+                for entry in piers:
+                    try:
+                        if entry[1].distance(pt) <= margin:
+                            return entry
+                    except Exception:
+                        continue
+                return None
 
             ex_l = pts + nvec * half
             ex_r = pts - nvec * half
@@ -1870,8 +2079,8 @@ class MeshExtruder:
                     self._plate(V, I, (a0, a1, b1, b0), steel, style, 4.0)
                     # parapet / railing
                     if rail_h <= 0.0: continue
-                    r0 = np.array([ex[i, 0], ex[i, 1], deck[i] + 0.02])
-                    r1 = np.array([ex[i + 1, 0], ex[i + 1, 1], deck[i + 1] + 0.02])
+                    r0 = np.array([ex[i, 0], ex[i, 1], deck[i]])
+                    r1 = np.array([ex[i + 1, 0], ex[i + 1, 1], deck[i + 1]])
                     r2 = np.array([ex[i + 1, 0], ex[i + 1, 1], deck[i + 1] + rail_h])
                     r3 = np.array([ex[i, 0], ex[i, 1], deck[i] + rail_h])
                     self._plate(V, I, (r0, r1, r2, r3), steel, style, 4.0)
@@ -1882,7 +2091,8 @@ class MeshExtruder:
                 self._plate(V, I, (l0, q0, q1, l1), concrete, style, 1.0)
 
             # piers down to the ground / sea bed
-            step = max(30.0, width * 3.4)
+            step = max(15.0, width * 3.4)
+            pier_placed = False
             for s in np.arange(step * 0.7, total - step * 0.35, step):
                 x = float(np.interp(s, arc, pts[:, 0]))
                 y = float(np.interp(s, arc, pts[:, 1]))
@@ -1893,7 +2103,10 @@ class MeshExtruder:
                 ty = float(np.interp(s, arc, tvec[:, 1]))
                 ground = hf.at(np.array([x]), np.array([y]))[0] if hf is not None else sea_z
                 ground = max(float(ground), float(sea_z)) - 0.5
+                if on_pier(x, y) is not None:
+                    continue      # the sea building here is the support
                 if z_deck - ground < 2.2: continue
+                pier_placed = True
                 if width >= 9.0:
                     for side in (1.0, -1.0):
                         cx = x + nx * half * 0.62 * side
@@ -1909,17 +2122,81 @@ class MeshExtruder:
                                       half * 0.55, 1.2, ground, z_deck - (thick - 0.1),
                                       concrete, style, 1.0)
 
+            # A short span with no intermediate pier still needs a central support so
+            # the deck does not read as an unsupported floating slab on flat ground.
+            if not pier_placed and total > 8.0:
+                sm = float(np.interp(total * 0.5, arc, pts[:, 0]))
+                tm = float(np.interp(total * 0.5, arc, pts[:, 1]))
+                nmx = float(np.interp(total * 0.5, arc, nvec[:, 0]))
+                nmy = float(np.interp(total * 0.5, arc, nvec[:, 1]))
+                tmx = float(np.interp(total * 0.5, arc, tvec[:, 0]))
+                tmy = float(np.interp(total * 0.5, arc, tvec[:, 1]))
+                zdeck_m = float(np.interp(total * 0.5, arc, deck))
+                gnd = hf.at(np.array([sm]), np.array([tm]))[0] if hf is not None else sea_z
+                gnd = max(float(gnd), float(sea_z)) - 0.5
+                if on_pier(sm, tm) is None and zdeck_m - gnd >= 2.2:
+                    self._box_between(V, I, (sm, tm), (nmx, nmy), (tmx, tmy),
+                                      half * 0.5, 1.1, gnd, zdeck_m - (thick - 0.1),
+                                      concrete, style, 1.0)
+
+            # A sea building under the deck carries it: a shaft rises from its
+            # roof to the soffit instead of a pier being driven through it.
+            # Buildings the deck itself runs through were removed beforehand
+            # (see ``drop_deck_buildings``), so they are not in this list.
+            if piers and corridor is not None:
+                for entry in piers:
+                    foot, roof = entry[1], entry[3]
+                    try:
+                        if not foot.intersects(corridor):
+                            continue
+                        crossing = foot.intersection(corridor)
+                        if crossing.is_empty:
+                            continue
+                        sample = crossing.representative_point()
+                        s = float(LineString(pts).project(Point(sample.x, sample.y)))
+                    except Exception:
+                        continue
+                    z_deck = float(np.interp(s, arc, deck))
+                    if z_deck - max(thick - .1, .4) - roof < 0.6:
+                        continue
+                    nx = float(np.interp(s, arc, nvec[:, 0]))
+                    ny = float(np.interp(s, arc, nvec[:, 1]))
+                    tx = float(np.interp(s, arc, tvec[:, 0]))
+                    ty = float(np.interp(s, arc, tvec[:, 1]))
+                    try:
+                        ring = np.asarray(foot.minimum_rotated_rectangle.exterior.coords,
+                                          np.float64)[:-1]
+                        hw = float(np.ptp(ring @ np.array([nx, ny]))) * .5
+                        hd = float(np.ptp(ring @ np.array([tx, ty]))) * .5
+                    except Exception:
+                        hw = hd = 2.0
+                    hw = max(1.0, min(hw * .9, half * .85))
+                    hd = max(1.0, min(hd * .9, 5.0))
+                    self._box_between(V, I, (float(sample.x), float(sample.y)),
+                                      (nx, ny), (tx, ty), hw, hd, roof,
+                                      z_deck - max(thick - .1, .4), concrete, style, 1.0)
+
             if not suspension:
                 continue
 
             # ---- towers + main cables -------------------------------------
             tower_h = 108.0 if "suspension" in structure else 72.0
-            tower_arcs = [s for s in np.arange(190.0, total - 40.0, 380.0)]
+            # A main span has a few pylons, not one every 380 m: two over the
+            # main span, one for a shorter crossing.  The rest of a long
+            # crossing is viaduct carried on piers.
+            if total >= 500.0:
+                tower_arcs = [total * .35, total * .65]
+            elif total >= 250.0:
+                tower_arcs = [total * .5]
+            else:
+                tower_arcs = []
             placed = []
             for s in tower_arcs:
                 x = float(np.interp(s, arc, pts[:, 0]))
                 y = float(np.interp(s, arc, pts[:, 1]))
                 z_deck = float(np.interp(s, arc, deck))
+                if on_pier(x, y, 3.0) is not None:
+                    continue      # a mapped building already stands as the pylon here
                 nx = float(np.interp(s, arc, nvec[:, 0]))
                 ny = float(np.interp(s, arc, nvec[:, 1]))
                 tx = float(np.interp(s, arc, tvec[:, 0]))
@@ -2243,12 +2520,15 @@ def mesh_tile_job(payload):
         raw, proj, owner=(z, tx, ty),
         default_height=default_height, level_height=level_height,
     )
+    sea_piers = MeshExtruder.sea_piers(buildings, waters, hf, sea_z, bbox)
+    buildings, sea_piers = MeshExtruder.drop_deck_buildings(
+        buildings, roads, hf, bbox, sea_z, sea_piers)
     buildings = MeshExtruder.prepare_buildings(buildings, roads, hf, bbox, sea_z)
     roads = clip_roads_to_bbox(roads, bbox)
     paths = road_paths_from_roads(roads, hf=hf, sea_z=sea_z, bbox=bbox)
     b_mesh, g_mesh, w_mesh, t_mesh, l_mesh, parked = MeshExtruder().build(
         buildings, roads, greens, waters, trees, paths=paths,
-        hf=hf, bbox=bbox, sea_z=sea_z,
+        hf=hf, bbox=bbox, sea_z=sea_z, sea_piers=sea_piers,
     )
 
     # ---- street-level detail: signage, furniture, sidewalks ----------------

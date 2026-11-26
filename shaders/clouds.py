@@ -11,7 +11,7 @@ CLOUD_DECK = MATERIAL_LIGHT + """
 #define GAIA_CLOUD_DECK
 uniform float uCloudCover, uStorm, uLightning;
 uniform vec2 uWind, uWindOffset;
-uniform vec3 uCloudLight, uCloudSunLight, uCloudOrigin;
+uniform vec3 uCloudLight, uCloudSunLight, uCloudOrigin, uCloudSunDir;
 
 float cloudHash(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
@@ -69,19 +69,26 @@ vec4 cloudColumn(vec3 dir) {
         float shape = smoothstep(threshold - edgeFootprint, threshold + .14 + edgeFootprint,
                                  body + (detail - .5) * .075);
         float core = smoothstep(threshold + .02, threshold + .24, body);
+        // Cheap self-shadowing: compare the cloud body with the same field shifted towards the sun.
+        // Thinner towards the sun means a lit edge; thicker means this side is in shade.  Gives
+        // cumulus a lit crown and a grey belly instead of a uniformly shaded sheet.
+        float sunLen = length(uCloudSunDir.xy);
+        vec2 sunStep = sunLen > 1e-3 ? uCloudSunDir.xy / sunLen : vec2(0.);
+        float toward = cloudFbm(mat2(.8, -.6, .6, .8) * (point + sunStep * .22) + warp * .75, footprint * 1.4);
+        float slope = (body - toward) * smoothstep(.08, .55, sunLen);
         float patchTau = shape * (1.8 + 3.2 * core) * smoothstep(.07, .25, cover)
                        * (1. - smoothstep(30000., 110000., lowDistance));
         float deck = smoothstep(.68, .95, cover);
         // Dense fronts close every gap, including the horizon; a thin sheet's
         // optical depth replaces volumetric integration and shades its cores.
         lowTau = mix(patchTau, 7. + body * 3., deck) * mix(2.4, 1., clamp(dir.z, 0., 1.));
-        illumination = clamp(.84 - .48 * core + (detail - .5) * .10, .28, .90);
+        illumination = clamp(.66 - .34 * core + slope * 1.9 + (detail - .5) * .10, .20, .96);
     }
     if (highDistance > 0.) {
         vec2 wind = length(uWind) > .01 ? normalize(uWind) : vec2(1., 0.);
         vec2 point = (uCloudOrigin.xy + dir.xy * min(highDistance, 300000.) - uWindOffset * 1.7) * .00018;
-        vec2 p = vec2(dot(point, wind) * .85, dot(point, vec2(-wind.y, wind.x)) * 3.8);
-        float footprint = cloudRayFootprint(dir, highDistance, rayCone) * .00018 * 3.8;
+        vec2 p = vec2(dot(point, wind) * .85, dot(point, vec2(-wind.y, wind.x)) * 2.3);
+        float footprint = cloudRayFootprint(dir, highDistance, rayCone) * .00018 * 2.3;
         p.y += (cloudFbm(p * .35 + 8.3, footprint * .35) - .5) * 2.8;
         float fibre = cloudFbm(p + 7.3, footprint * 1.4);
         float fringe = cloudFilteredNoise(p * vec2(2.3, 6.7) + 14.8, footprint * 6.7);
@@ -112,8 +119,9 @@ vec3 cloudLayerRadiance(vec3 dir, vec3 sunDir, vec4 column, bool high) {
     float transmit = exp(-tau * (high ? .32 : .30));
     // Diffuse fill does not brighten every thin boundary into a white outline.
     // Only forward-scattered direct sunlight supplies the silver lining below.
-    float bodyShade = high ? .88 : .53 + .48 * column.z;
-    vec3 ambient = cloudIncident() * bodyShade * (1. - .38 * uStorm);
+    float bodyShade = high ? .88 : .36 + .66 * column.z;
+    vec3 stormTint = mix(vec3(1.), vec3(.80, .87, 1.12), uStorm);
+    vec3 ambient = cloudIncident() * bodyShade * (1. - .52 * uStorm) * stormTint;
     // Optical depth darkens thick cores; thin sunward rims give silver linings.
     vec3 direct = uCloudSunLight * sunUp * (transmit * (.12 + .42 * forward) + (high ? .035 : .022));
     vec3 flash = mix(vec3(.26, .29, .34), vec3(1., 1.08, 1.2) * nits(45.), uNightFactor) * uLightning;
@@ -130,7 +138,11 @@ vec3 weatherSky(vec3 base, vec3 dir, vec3 sunDir) {
     // Atmospheric in-scattering veils distant cloud structure without bright,
     // aliased rims. This is deliberately a cheap aerial-perspective approximation.
     float air = 1. - exp(-column.w * .000075);
-    vec3 low = mix(cloudLayerRadiance(dir, sunDir, column, false), base, air);
+    // Distant cloud fades into the haze *under the deck*, not into the clear-sky horizon: with a
+    // storm or overcast above, the clear atmosphere's yellow / orange horizon must not show through.
+    vec3 deckHaze = cloudIncident() * .80 * (1. - .52 * uStorm) * mix(vec3(1.), vec3(.80, .87, 1.12), uStorm);
+    vec3 hazeTo = mix(base, deckHaze, smoothstep(.12, .80, uCloudCover));
+    vec3 low = mix(cloudLayerRadiance(dir, sunDir, column, false), hazeTo, air);
     return mix(high, low, 1. - exp(-column.x));
 }
 #endif

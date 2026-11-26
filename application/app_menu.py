@@ -276,7 +276,6 @@ class MenuHost:
             self.driving.controls = DriveControls()
         if self.walker.active:
             self._walk_controls = WalkControls(0.0, 0.0, False, False, False)
-            self._profile_held = False
 
     # ----------------------------------------------------------- loading screen
     def _draw_city_loading(self, w, h):

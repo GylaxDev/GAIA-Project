@@ -1,0 +1,273 @@
+{
+  "version": 1,
+  "license": "CC0-1.0",
+  "license_url": "https://polyhaven.com/license",
+  "encoding": "octahedral sRGB RGB + linear practical-source mask",
+  "size": 1024,
+  "layers": 8,
+  "texture_bytes": 44739232,
+  "file_bytes": 25068202,
+  "sha256": "893eb82ea8c54b1013c351c513fa337071cca5325a644bbea715abe5e4149064",
+  "sources": [
+    {
+      "asset": "comfy_cafe",
+      "authors": {
+        "Sergej Majboroda": "All"
+      },
+      "page": "https://polyhaven.com/a/comfy_cafe",
+      "source": {
+        "size": 24624985,
+        "md5": "4a94ffae25ca42e960a8dfcaf436e5f3",
+        "url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/comfy_cafe_4k.hdr"
+      },
+      "source_sha256": "a45928298c0c1eb8c4e9eae68136f92703b933b5a56091dafffd2eb41b3e0385",
+      "bake": {
+        "id": "comfy_cafe",
+        "yaw": 0.34,
+        "ceiling": 0.38,
+        "lamps": [
+          [
+            0.1,
+            0.42,
+            0.155,
+            0.52
+          ],
+          [
+            0.265,
+            0.44,
+            0.3,
+            0.51
+          ],
+          [
+            0.565,
+            0.42,
+            0.61,
+            0.51
+          ],
+          [
+            0.91,
+            0.42,
+            0.965,
+            0.52
+          ]
+        ]
+      },
+      "room": "cafe",
+      "layer": 0
+    },
+    {
+      "asset": "decor_shop",
+      "authors": {
+        "Sergej Majboroda": "All"
+      },
+      "page": "https://polyhaven.com/a/decor_shop",
+      "source": {
+        "size": 25059196,
+        "md5": "c61630a04496177e8b310a10580e1c1a",
+        "url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/decor_shop_4k.hdr"
+      },
+      "source_sha256": "a000c2bef8e8e464be58eb82cf690fd21d32e722223b6e2a275dd37bd326e9bb",
+      "bake": {
+        "id": "decor_shop",
+        "yaw": 0.78,
+        "ceiling": 0.32,
+        "lamps": [
+          [
+            0.015,
+            0.39,
+            0.055,
+            0.48
+          ],
+          [
+            0.23,
+            0.4,
+            0.27,
+            0.49
+          ],
+          [
+            0.43,
+            0.37,
+            0.475,
+            0.45
+          ],
+          [
+            0.55,
+            0.38,
+            0.6,
+            0.46
+          ]
+        ]
+      },
+      "room": "retail",
+      "layer": 1
+    },
+    {
+      "asset": "witsand_woolshop",
+      "authors": {
+        "Jenelle van Heerden": "All"
+      },
+      "page": "https://polyhaven.com/a/witsand_woolshop",
+      "source": {
+        "url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/witsand_woolshop_4k.hdr",
+        "md5": "5309da0e6f32ea8cd4f833389d2c8517",
+        "size": 26041611
+      },
+      "source_sha256": "ed38e2ac0c702fabc8f548bab6309a392b18cb381dcfd1d2e22b47b96ecb7b06",
+      "bake": {
+        "id": "witsand_woolshop",
+        "yaw": 0.78,
+        "ceiling": 0.34,
+        "lamps": []
+      },
+      "room": "market",
+      "layer": 2
+    },
+    {
+      "asset": "cinema_lobby",
+      "authors": {
+        "Sergej Majboroda": "All"
+      },
+      "page": "https://polyhaven.com/a/cinema_lobby",
+      "source": {
+        "size": 26366369,
+        "md5": "9412300aecba939ea9ca1d13850611c0",
+        "url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/cinema_lobby_4k.hdr"
+      },
+      "source_sha256": "25c05729165b2656b5187c48b835ed82e6dbf2ed85691042ae2e5c0a55d68059",
+      "bake": {
+        "id": "cinema_lobby",
+        "yaw": 0.49,
+        "ceiling": 0.43,
+        "lamps": []
+      },
+      "room": "arcade",
+      "layer": 3
+    },
+    {
+      "asset": "st_fagans_interior",
+      "authors": {
+        "Morgan Evans": "All"
+      },
+      "page": "https://polyhaven.com/a/st_fagans_interior",
+      "source": {
+        "size": 24206466,
+        "md5": "22fc2c900f88b03067ec5b8dc64029db",
+        "url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/st_fagans_interior_4k.hdr"
+      },
+      "source_sha256": "55cf98310ef71431ed02314e23e67d5535fb7747d50efc828f01d629f4f33649",
+      "bake": {
+        "id": "st_fagans_interior",
+        "yaw": 0.71,
+        "ceiling": 0.4,
+        "lamps": [],
+        "exclude": [
+          [
+            0.25,
+            0.33,
+            0.36,
+            0.44
+          ]
+        ]
+      },
+      "room": "lobby",
+      "layer": 4
+    },
+    {
+      "asset": "poly_haven_studio",
+      "authors": {
+        "Greg Zaal": "All"
+      },
+      "page": "https://polyhaven.com/a/poly_haven_studio",
+      "source": {
+        "url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/poly_haven_studio_4k.hdr",
+        "size": 25873476,
+        "md5": "f63b4a87cee91971284a260fe03fe305"
+      },
+      "source_sha256": "ec35529dc7691f2ce6662c5f135a22050543225056b85a21e4b541a7204cb938",
+      "bake": {
+        "id": "poly_haven_studio",
+        "yaw": 0.025,
+        "ceiling": 0.33,
+        "lamps": [],
+        "office_ceiling": true,
+        "blinds": [
+          [
+            0.0,
+            0.385,
+            0.22,
+            0.565
+          ],
+          [
+            0.28,
+            0.395,
+            0.415,
+            0.575
+          ],
+          [
+            0.805,
+            0.4,
+            0.98,
+            0.565
+          ]
+        ]
+      },
+      "room": "office",
+      "layer": 5
+    },
+    {
+      "asset": "brown_photostudio_02",
+      "authors": {
+        "Sergej Majboroda": "All"
+      },
+      "page": "https://polyhaven.com/a/brown_photostudio_02",
+      "source": {
+        "url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/brown_photostudio_02_4k.hdr",
+        "size": 25433817,
+        "md5": "ff31937a65a06fd222d815d01ddef436"
+      },
+      "source_sha256": "368251c254a47dc7aaf532a515c0bd9ad3708ce5a3c5bb520b1628bcb9a37bc0",
+      "bake": {
+        "id": "brown_photostudio_02",
+        "yaw": 0.23,
+        "ceiling": 0.265,
+        "lamps": []
+      },
+      "room": "living",
+      "layer": 6
+    },
+    {
+      "asset": "hotel_room",
+      "authors": {
+        "Greg Zaal": "All"
+      },
+      "page": "https://polyhaven.com/a/hotel_room",
+      "source": {
+        "size": 24486585,
+        "md5": "061931205903b0d054d689bf97e1ab34",
+        "url": "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/4k/hotel_room_4k.hdr"
+      },
+      "source_sha256": "a0deb966fae42dd6c7f069754b7102766bd083384cfd513122634ee38b01f88e",
+      "bake": {
+        "id": "hotel_room",
+        "yaw": 0.82,
+        "ceiling": 0.31,
+        "lamps": [
+          [
+            0.025,
+            0.315,
+            0.065,
+            0.365
+          ],
+          [
+            0.5,
+            0.265,
+            0.71,
+            0.335
+          ]
+        ]
+      },
+      "room": "bedroom",
+      "layer": 7
+    }
+  ]
+}

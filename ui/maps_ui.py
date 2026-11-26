@@ -61,10 +61,11 @@ class MapsChrome:
         out.append(("map", (gx, gy, B, B)))
         out.append(("locate", (gx, gy + B, B, B)))
         out.append(("fullscreen", (gx, gy + 2 * B, B, B)))
-        out.append(("compass", (gx, gy + 3 * B + 12, B, B)))
-        zx, zy = w - M - B, h - M - 2 * B
-        out.append(("zoom_in", (zx, zy, B, B)))
-        out.append(("zoom_out", (zx, zy + B, B, B)))
+        out.append(("compass", (gx, gy + 3 * B + 10, B, B)))
+        if mode == "map":
+            zx, zy = w - M - B, h - M - 2 * B
+            out.append(("zoom_in", (zx, zy, B, B)))
+            out.append(("zoom_out", (zx, zy + B, B, B)))
         if mode == "map":
             sw, sx, sy, sh = self.SIDEBAR_W, M, M, h - 2 * M
             if self.sidebar_open:
@@ -89,7 +90,7 @@ class MapsChrome:
             else:
                 out.append(("sidebar", (M, M, 40, 40)))
         else:
-            out.append(("search", (M, M, 52, 56)))
+            out.append(("search", (M, M, 52, 52)))
         return out
 
     def hit(self, pos, w, h, mode, n_cities=0):
@@ -241,8 +242,9 @@ class MapsChrome:
             mouse, [self.icon_map, self.icon_locate,
                     (lambda u, x, y, s, c: self.icon_fullscreen(u, x, y, s, c, fullscreen))])
         self._compass(ui, rects["compass"], mouse, north_vec)
-        zi, zo = rects["zoom_in"], rects["zoom_out"]
-        self._button_group(ui, [zi, zo], ("zoom_in", "zoom_out"), mouse, [self._plus, self._minus])
+        if "zoom_in" in rects:
+            zi, zo = rects["zoom_in"], rects["zoom_out"]
+            self._button_group(ui, [zi, zo], ("zoom_in", "zoom_out"), mouse, [self._plus, self._minus])
 
     def _finish_tooltips(self, ui, w, h, mode, mouse):
         name = self.hit(mouse, w, h, mode)
@@ -274,7 +276,7 @@ class MapsChrome:
             caps(ui, "// Maps", sb[0] + 20, sb[1] + 28, T.T_TITLE_2, T.TEXT_PRIMARY, "bold", vcenter=True)
             tg = rects["sidebar"]
             hv = spring(ui, ("hv", "sidebar"), 1.0 if _in(tg, *mouse) else 0.0, T.SPRING_GENTLE)
-            ui.rect(tg[0], tg[1], 32, 32, mix(T.BAR, T.WD_BLUE, hv))
+            ui.box(tg[0], tg[1], 32, 32, 10, mix((1.0, 1.0, 1.0, 0.10), T.SYS_BLUE, hv))
             self.icon_sidebar(ui, tg[0] + 16, tg[1] + 16, 18, T.TEXT_SECONDARY)
             tiles = {"guides": T.TILE_ORANGE, "directions": T.TILE_BLUE}
             rows = (("search", "Search", self.icon_search), ("guides", "Guides", self.icon_guides),
@@ -363,33 +365,33 @@ class MapsChrome:
     # ------------------------------------------------------------------ 3D screen
     def draw_scene_ui(self, ui, w, h, mouse, label, coords, clock, sub, typing, query,
                       fullscreen, north_vec):
-        M, B, ch = T.MARGIN, self.BTN, 56
-        # time + conditions card, left of the control cluster
-        sub_fit = ui.fit(sub, T.T_CAPTION_2, min(360, max(120, w * 0.30)))
-        tcw = int(max(ui.text_w(clock, T.T_HEAD, weight="semibold"),
-                      ui.text_w(sub_fit, T.T_CAPTION_2, weight="medium")) + 36)
+        M, B, ch = T.MARGIN, self.BTN, 52
+        # time + conditions: one compact pill, clock large, conditions quiet beside it
+        sub_fit = ui.fit(sub, T.T_CAPTION_2, min(300, max(100, w * 0.24)))
+        cw_clock = ui.text_w(clock, T.T_TITLE_2, weight="semibold")
+        tcw = int(cw_clock + ui.text_w(sub_fit, T.T_CAPTION_2, weight="medium") + 18 + 36)
         tx = w - M - B - 12 - tcw
-        glass(ui, tx, M, tcw, ch, 20, "hud")
-        ui.text(clock, tx + 18, M + 8, T.T_HEAD, T.TEXT_PRIMARY, weight="semibold")
-        ui.text(sub_fit, tx + 18, M + 33, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="medium")
-        # place card with the search button
-        cw = int(max(200, min(380, tx - 12 - M)))
-        glass(ui, M, M, cw, ch, 20, "hud")
-        sr = (M + 10, M + 10, 36, 36)
+        glass(ui, tx, M, tcw, ch, ch / 2, "hud")
+        ui.text_c(clock, tx + 18, M + ch / 2, T.T_TITLE_2, T.TEXT_PRIMARY, weight="semibold")
+        ui.text_c(sub_fit, tx + 18 + cw_clock + 12, M + ch / 2 + 1, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="medium")
+        # place pill with search
+        cwid = int(max(200, min(380, tx - 12 - M)))
+        glass(ui, M, M, cwid, ch, ch / 2, "hud")
         hv = spring(ui, ("hv", "search"), 1.0 if _in((M, M, 52, ch), *mouse) else 0.0, T.SPRING_GENTLE)
-        ui.rect(sr[0], sr[1], 36, 36, mix(T.BAR, T.WD_BLUE, hv))
-        self.icon_search(ui, sr[0] + 18, sr[1] + 18, 17, T.TEXT_PRIMARY)
+        if hv > 0.01:
+            ui.box(M + 6, M + 6, ch - 12, ch - 12, (ch - 12) / 2, (1.0, 1.0, 1.0, 0.12 * hv))
+        self.icon_search(ui, M + 26, M + ch / 2, 17, T.TEXT_SECONDARY)
         if typing:
-            self._field(ui, M + 54, M + 10, cw - 64, ch - 20, query)
+            self._field(ui, M + 50, M + 8, cwid - 60, ch - 16, query)
         else:
-            ui.text(ui.fit(label or "Scene", T.T_LABEL + 1, cw - 78, weight="semibold"),
-                    M + 60, M + 9, T.T_LABEL + 1, T.TEXT_PRIMARY, weight="semibold")
-            ui.text(coords, M + 60, M + 32, T.T_CAPTION_2, T.TEXT_TERTIARY, weight="medium")
+            ui.text(ui.fit(label or "Scene", T.T_LABEL, cwid - 74, weight="semibold"),
+                    M + 52, M + 9, T.T_LABEL, T.TEXT_PRIMARY, weight="semibold")
+            ui.text(coords, M + 52, M + 29, T.T_CAPTION_1, T.TEXT_TERTIARY, weight="medium")
         self.draw_controls(ui, w, h, "scene", mouse, fullscreen, north_vec)
         self._finish_tooltips(ui, w, h, "scene", mouse)
 
     # ------------------------------------------------------------------ HUD blocks
-    def hint_bar(self, ui, x, y, max_w, items):
+    def hint_bar(self, ui, x, y, max_w, items, fade=1.0, center=False):
         """A row of keycap + label pairs in one glass capsule.  Items that don't fit are
         dropped from the end, but the last item (the shortcuts entry) always stays.
         Returns the width drawn."""
@@ -403,6 +405,10 @@ class MapsChrome:
             keep.pop(len(keep) - 2 if len(keep) > 2 else 0)
         total = sum(widths[i] for i in keep) + gap * (len(keep) - 1) + 2 * pad
         hh = 38
+        if center:
+            x = x + (max_w - total) / 2
+        if fade < 1.0:
+            return self._hint_bar_faded(ui, x, y, items, keep, widths, gap, pad, hh, total, size, fade)
         glass(ui, x, y, total, hh, hh / 2, "hud")
         cx = x + pad
         for i in keep:
@@ -410,6 +416,18 @@ class MapsChrome:
             kw = keycaps(ui, cx, y + (hh - 21) / 2, key, 11)
             ui.text_c(label, cx + kw + 6, y + hh / 2, size, T.TEXT_SECONDARY, weight="medium")
             cx += widths[i] + gap
+        return total
+
+    def _hint_bar_faded(self, ui, x, y, items, keep, widths, gap, pad, hh, total, size, fade):
+        """The same bar while it fades out: panel and text scaled by ``fade`` (keycaps are dropped)."""
+        ui.box(x, y, total, hh, hh / 2, ((0.07, 0.075, 0.09, 0.55 * fade),) * 2, (1, 1, 1, 0.08 * fade))
+        cx = x + pad
+        for i in keep:
+            key, label = items[i]
+            ui.text_c(f"{key}", cx, y + hh / 2, size, (1, 1, 1, 0.85 * fade), weight="semibold")
+            kw = ui.text_w(key, size, weight="semibold")
+            ui.text_c(label, cx + kw + 6, y + hh / 2, size, (1, 1, 1, 0.55 * fade), weight="medium")
+            cx += widths[i] + gap - (widths[i] - kw - 6 - ui.text_w(label, size, weight="medium"))
         return total
 
     def status_card(self, ui, x, bottom, rows, progress=None, shimmer=0.0, min_w=0):
@@ -438,14 +456,14 @@ class MapsChrome:
                 T.TEXT_TERTIARY, weight="semibold")
         sp = str(kmh)
         sw = ui.text(sp, x + 18, y + 30, 44, T.TEXT_PRIMARY, weight="bold")
-        ui.text(unit, x + 18 + sw + 6, y + 56, T.T_BODY, T.WD_GREEN, weight="medium")
+        ui.text(unit, x + 18 + sw + 6, y + 56, T.T_BODY, T.TEXT_TERTIARY, weight="medium")
         gcx, gcy = x + w - 18 - 20, y + 14 + 20
-        ui.rect(gcx - 20, gcy - 20, 40, 40, T.BAR)
+        ui.box(gcx - 20, gcy - 20, 40, 40, 12, (1.0, 1.0, 1.0, 0.10), (1.0, 1.0, 1.0, 0.08))
         ui.text_c(gear, gcx, gcy, T.T_HEAD, T.TEXT_PRIMARY, anchor="center", weight="bold")
         blink = int(time.time() * 2.6) % 2 == 0
         for sgn, ax in ((-1, gcx - 20 - 36), (1, gcx - 20 - 18)):
             lit = signal == sgn and blink
-            col = T.SYS_GREEN if lit else (1, 1, 1, 0.12)
+            col = T.SYS_BLUE if lit else (1, 1, 1, 0.12)
             if sgn < 0:
                 ui.tri((ax + 12, gcy - 7), (ax + 12, gcy + 7), (ax, gcy), col)
             else:

@@ -381,10 +381,10 @@ def build_neon(buildings, hf=None, paths=None):
             continue
         foundation = _ground_z(b, hf)
         for edge_id, (a, _, tangent, normal, length) in enumerate(_frontages(b.footprint, tree)):
-            count = max(1, min(16, int((length-1.)/6.2)))
+            count = max(1, min(16, int((length-1.)/4.6)))
             pitch = (length-1.)/count
             for k in range(count):
-                width = min(9.5, pitch-.18)
+                width = min(6.5, pitch-.18)
                 if width < 2.7: continue
                 s0 = .5+k*pitch+(pitch-width)*.5
                 s1 = s0+width
@@ -394,8 +394,8 @@ def build_neon(buildings, hf=None, paths=None):
                 base = foundation+.23
                 if hf is not None:
                     base = max(base, float(hf.at(np.array([mid[0]]), np.array([mid[1]]))[0])+.23)
-                height = min(3.55 if usage == 3 else 3.05, foundation+b.height-base-.85)
-                if height < 2.45: continue  # no hovering shops on steep/low buildings
+                height = min(3.2 if usage == 3 else 2.85, foundation+b.height-base-.85)
+                if height < 2.35: continue  # no hovering shops on steep/low buildings
                 top = base+height
                 # A single facade face hides the unrelated old podium-window pattern.
                 # Flat jambs/mullions live in the portal material, not twelve-faced boxes.

@@ -31,17 +31,17 @@ FLASH_PERIOD = .8
 SUSPENSION = 0x1000
 
 # Shared by the traffic physics and GPU animation, not inferred from body boxes.
-LENGTHS = np.array([4.885, 5.050, 4.460, 11., 7.5, 4.885, 5.691, 8., 5.890, 4.465])
-WHEELBASES = np.array([2.825, 3.025, 2.700, 5.65, 4.5, 2.825, 3.429, 5.3, 3.683, 2.670])
-WHEEL_RADII = np.array([.33415, .39425, .317, .50, .40, .33415, .38695, .46, .43756, .34126])
-HEAVY = np.array([False, False, False, True, True, False, False, True, False, False])
+LENGTHS = np.array([4.885, 5.050, 4.460, 11., 7.5, 4.885, 5.691, 5.890, 4.465])
+WHEELBASES = np.array([2.825, 3.025, 2.700, 5.65, 4.5, 2.825, 3.429, 3.683, 2.670])
+WHEEL_RADII = np.array([.33415, .39425, .317, .50, .40, .33415, .38695, .43756, .34126])
+HEAVY = np.array([False, False, False, True, True, False, False, False, False])
 
 # Body envelopes for player picking/collision (mirrors are not solid obstacles).
-WIDTHS = np.array([1.840, 2.004, 1.745, 2.550, 2.200, 1.840, 2.012, 2.500, 2.100, 1.833])
-HEIGHTS = np.array([1.445, 1.783, 1.490, 3.445, 3.200, 1.570, 2.159, 3.300, 1.912, 1.610])
+WIDTHS = np.array([1.840, 2.004, 1.745, 2.550, 2.200, 1.840, 2.012, 2.100, 1.833])
+HEIGHTS = np.array([1.445, 1.783, 1.490, 3.445, 3.200, 1.570, 2.159, 1.912, 1.610])
 # Approximate kerb masses for player suspension. Heavy kinds are never drivable.
-MASSES = np.array([1500., 2050., 1250., 12000., 7500., 1500., 2300., 9000., 2300., 1500.])
-VEHICLE_NAMES = ('Sedan', 'SUV', 'Prius', 'Bus', 'Truck', 'Taxi', 'Van', 'Garbage truck', 'Pickup', 'BMW X1')
+MASSES = np.array([1500., 2050., 1250., 12000., 7500., 1500., 2300., 2300., 1500.])
+VEHICLE_NAMES = ('Sedan', 'SUV', 'Prius', 'Bus', 'Truck', 'Taxi', 'Van', 'Pickup', 'BMW X1')
 
 
 def normalize_instances(rows):

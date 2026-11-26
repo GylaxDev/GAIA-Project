@@ -25,7 +25,7 @@ import numpy as np
 
 from ..ui import theme as T
 from ..core.config import ACCENT
-from ..shaders import OVERLAY_VS, OVERLAY_FS
+from ..shaders import OVERLAY_VS, OVERLAY_FS, OVERLAY_BLUR_FS
 
 FONT_DIR = Path(__file__).resolve().parents[1] / "assets" / "fonts"
 FONT_FILES = {"regular": "Inter-Regular.ttf", "medium": "Inter-Medium.ttf",
@@ -67,7 +67,16 @@ class Overlay2D:
             shaders.compileShader(OVERLAY_FS, gl.GL_FRAGMENT_SHADER), validate=False)
         self.u = {n: gl.glGetUniformLocation(self.prog, n)
                   for n in ("uScreen", "uMode", "uColor", "uColor2", "uBorder", "uHalf", "uRad",
-                            "uBw", "uSoft", "uInvert", "uTex", "uClip", "uClipRad")}
+                            "uBw", "uSoft", "uInvert", "uTex", "uClip", "uClipRad", "uUV")}
+        # Separable gaussian used by ``frost`` (real backdrop blur behind glass panels).
+        self.blur = shaders.compileProgram(
+            shaders.compileShader(OVERLAY_VS, gl.GL_VERTEX_SHADER),
+            shaders.compileShader(OVERLAY_BLUR_FS, gl.GL_FRAGMENT_SHADER), validate=False)
+        self.bu = {n: gl.glGetUniformLocation(self.blur, n)
+                   for n in ("uScreen", "uTex", "uDir", "uScale", "uFlip")}
+        self._blur = None
+        self._frost_tex = None         # this frame's shared backdrop blur
+        self._frost_frame = 0
         self.vao = gl.glGenVertexArrays(1)
         gl.glBindVertexArray(self.vao)
         self.vbo = gl.glGenBuffers(1)
@@ -103,6 +112,8 @@ class Overlay2D:
         self.lw, self.lh = w / S, h / S
         self.pw, self.ph = int(w), int(h)
         self._clips = []
+        self._frost_tex = None
+        self._frost_frame += 1
         gl.glDisable(gl.GL_SCISSOR_TEST)
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
         gl.glDisable(gl.GL_DEPTH_TEST); gl.glDisable(gl.GL_CULL_FACE)
@@ -299,6 +310,107 @@ class Overlay2D:
         for i in range(n if closed else n - 1):
             a, b = pts[i], pts[(i + 1) % n]
             self.line(a[0], a[1], b[0], b[1], width, color)
+
+    # ---------------------------------------------------------------- blur
+    def _blur_res(self, w, h):
+        """Textures/FBOs for ``frost``, grown on demand and reused across frames."""
+        gl = self.gl
+        res = self._blur
+        if res is not None and res["w"] >= w and res["h"] >= h:
+            return res
+        if res is not None:
+            gl.glDeleteFramebuffers(2, res["fbo"])
+            gl.glDeleteTextures([res["src"]] + res["tex"])
+        limit = max(256, int(gl.glGetIntegerv(gl.GL_MAX_TEXTURE_SIZE)))
+        w, h = min(w, limit), min(h, limit)
+        hw, hh = max(2, w // 2), max(2, h // 2)
+
+        def _tex(tw, th):
+            t = gl.glGenTextures(1)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, t)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
+            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, tw, th, 0, gl.GL_RGBA,
+                            gl.GL_UNSIGNED_BYTE, None)
+            return t
+
+        src = _tex(w, h)
+        tex = [_tex(hw, hh), _tex(hw, hh)]
+        fbo = []
+        for t in tex:
+            f = gl.glGenFramebuffers(1)
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, f)
+            gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0,
+                                      gl.GL_TEXTURE_2D, t, 0)
+            fbo.append(f)
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        res = {"w": w, "h": h, "src": src, "tex": tex, "fbo": fbo}
+        self._blur = res
+        return res
+
+    def frost(self, x, y, w, h, r=0.0, amount=0.92, spread=1.9):
+        """Blur what is already drawn behind a rounded rect, then draw it back.
+
+        The backdrop is captured and blurred **once per frame** and shared by
+        every glass panel (see ``_frost_backdrop``); each panel only samples its
+        own rectangle out of that one blurred texture.  Copying and blurring the
+        framebuffer per panel forced a GPU sync point for every card, which is
+        what made the HUD cost tens of milliseconds a frame.
+
+        Call it *before* the panel's fill so the glass tint sits on top of a
+        genuinely defocused backdrop.
+        """
+        gl = self.gl
+        S = self.scale
+        x0, y0 = max(0, int(math.floor(x * S))), max(0, int(math.floor(y * S)))
+        x1 = min(self.pw, int(math.ceil((x + w) * S)))
+        y1 = min(self.ph, int(math.ceil((y + h) * S)))
+        if x1 - x0 < 4 or y1 - y0 < 4 or amount <= 0.0:
+            return
+        tex = self._frost_tex
+        if tex is None:
+            tex = self._frost_tex = self._frost_backdrop(spread)
+            if tex is None:
+                return
+        gl.glBindVertexArray(self.vao)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
+        # The copy is stored bottom-up (GL's origin is bottom-left) while the panel's local
+        # coordinates run top-down, so v starts at the panel's TOP edge and decreases towards
+        # its bottom.  (The earlier order sampled the backdrop upside-down inside every panel.)
+        v0 = 1.0 - max(0.0, y / self.lh)
+        v1 = 1.0 - min(1.0, (y + h) / self.lh)
+        self._set(9, (1.0, 1.0, 1.0, amount))
+        gl.glUniform1f(self.u["uSoft"], 4.0 * self.scale)
+        hx, hy = w * 0.5, h * 0.5
+        gl.glUniform2f(self.u["uHalf"], hx, hy)
+        gl.glUniform1f(self.u["uRad"], max(0.0, min(float(r), min(w, h) * 0.5)))
+        gl.glUniform4f(self.u["uUV"], max(0.0, x / self.lw), v0,
+                       min(1.0, (x + w) / self.lw), v1)
+        q = _quad(x, y, w, h)
+        q[:, 2] = q[:, 0] - (x + hx); q[:, 3] = q[:, 1] - (y + hy)
+        self._submit(q, gl.GL_TRIANGLES)
+        self._apply_clip()
+
+    def _frost_backdrop(self, spread=1.9):
+        """Copy the frame's backdrop into a texture every glass panel shares.
+
+        One framebuffer copy per frame instead of one per panel: the per-panel
+        copies each forced a GPU sync point.  The blur itself is done by the
+        panel shader (mode 9) while sampling this texture.
+        """
+        gl = self.gl
+        W, H = self.pw, self.ph
+        if W < 4 or H < 4:
+            return None
+        res = self._blur_res(W, H)
+        gl.glBindVertexArray(self.vao)
+        gl.glActiveTexture(gl.GL_TEXTURE0)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, res["src"])
+        gl.glCopyTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, 0, 0, W, H)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        return res["src"]
 
     # ----------------------------------------------------------- containers
     def container(self, x, y, w, h, kind="panel", r=None, hover=0.0, pressed=False,

@@ -23,18 +23,42 @@ uniform vec2 uScale;
 uniform float uGrow;
 out vec3 vWorld; out vec3 vNormal; out vec3 vColor; out float vPart;
 out vec3 vShadowRelative;
-out vec2 vUV; out vec2 vTexUV; out float vSeed;
+out vec2 vUV; out vec2 vTexUV; out float vSeed; out float vCrown;
 """ + MATERIAL_LIGHT + VEGETATION_LIGHT + TREE_INSTANCE + """
 void main() {
-    vec3 p = treeInstancePosition(aPos, iPos, iScaleRot, uScale, uGrow, uOffset);
+    vec3 p;
+    if (aPart > 1.5) {
+        p = treeBillboardPosition(aPos, iPos, iScaleRot, uScale, uGrow, uOffset, uCamPos);
+        vNormal = vec3(0.0, 0.0, 1.0);
+        vTexUV = treeBillboardUV(aUV, iPos, iScaleRot, uCamPos, uScale, uOffset);
+        vCrown = 1.0;
+    } else {
+        p = treeInstancePosition(aPos, iPos, iScaleRot, uScale, uGrow, uOffset);
+        vNormal = treeInstanceNormal(aPos, aNormal, iPos, iScaleRot, uScale, uGrow);
+        vTexUV = treeAtlasUV(aUV, iPos, iScaleRot, aCardSeed);
+        // Crown depth in template space: leaves near the centre and base are shaded by the foliage
+        // around them, the outer upper shell sees the sky.  Gives the crown a rounded, dense volume
+        // instead of a flat scatter of equally bright cards.
+        float rad = length(aPos.xy) / 3.4;
+        float up = clamp((aPos.z - 3.6) / 6.4, 0.0, 1.0);
+        vCrown = aPart > 0.5 ? mix(.42, 1.0, smoothstep(.10, 1.05, rad * .75 + up * .55)) : 1.0;
+    }
     vWorld = p;
     vShadowRelative = p - uCamPos;
-    vNormal = treeInstanceNormal(aPos, aNormal, iPos, iScaleRot, uScale, uGrow);
-    if (aPart > 0.5) vColor = aColor * foliageReflectance(iTint);
-    else             vColor = aColor;
+    // Every tree gets its own hue and lightness within the species: some yellower and
+    // sunnier, some bluer and darker, so a row of trees stops reading as one stamped model.
+    float ts = treeSeed(iPos, iScaleRot);
+    float hue = ts - .5, lightness = fract(ts * 5.31) - .5;
+    vec3 varied = vec3(1.0 + .07 * hue, 1.0 + .05 * lightness, 1.0 - .08 * hue) * (1.0 + .20 * lightness);
+    if (aPart > 1.5) {
+        // The impostor atlas already carries leaf/bark albedo, so only the
+        // per-instance reflectance variation is applied here.
+        vColor = foliageReflectance(iTint) * varied;
+    } else if (aPart > 0.5) {
+        vColor = aColor * foliageReflectance(iTint) * varied;
+    } else vColor = aColor;
     vPart = aPart;
     vUV = aUV;
-    vTexUV = treeAtlasUV(aUV, iPos, iScaleRot, aCardSeed);
     vSeed = aCardSeed;
     gl_Position = uProj * uView * vec4(p, 1.0);
 }
@@ -43,8 +67,8 @@ void main() {
 TREE_FS = ("""
 #version 330 core
 in vec3 vWorld; in vec3 vNormal; in vec3 vColor; in float vPart;
-in vec2 vUV; in vec2 vTexUV; in float vSeed;
-uniform sampler2D uLeafTex, uLeafNormalTex;
+in vec2 vUV; in vec2 vTexUV; in float vSeed; in float vCrown;
+uniform sampler2D uLeafTex, uLeafNormalTex, uTreeImpostorTex;
 uniform vec3 uCamPos, uSunDir, uFogColor;
 uniform vec3 uSunColor, uAmbColor;
 uniform float uFogNear, uFogFar, uNightFactor, uExposure;
@@ -70,7 +94,12 @@ void main() {
     vec2 uvDx = dFdx(vUV), uvDy = dFdy(vUV);
     vec3 worldDx = dFdx(vShadowRelative), worldDy = dFdy(vShadowRelative);
     vec4 leaf = vec4(1.0), detail = vec4(.5, .5, 1.0, .92);
-    if (vPart > 0.5) {
+    vec4 impostor = vec4(0.0);
+    if (vPart > 1.5) {
+        // The atlas is baked leaf/bark albedo, already carrying crown occlusion.
+        impostor = textureGrad(uTreeImpostorTex, vTexUV, texDx, texDy);
+        if (impostor.a < LEAF_ALPHA_CUTOFF) discard;
+    } else if (vPart > 0.5) {
         leaf = textureGrad(uLeafTex, vTexUV, texDx, texDy);
         if (leaf.a < LEAF_ALPHA_CUTOFF) discard;
         detail = textureGrad(uLeafNormalTex, vTexUV, texDx, texDy);
@@ -91,7 +120,20 @@ void main() {
     vec3 albedo = vColor;
     vec3 Nd = N;
     float cavity = 1.0;
-    if (vPart > 0.5) {
+    if (vPart > 1.5) {
+        // Baked albedo is multiplied by the instance reflectance on foliage only;
+        // the brown trunk keeps its own colour.  The leaf atlas is nearly neutral,
+        // so separate the bright crown from the dark bark by baked luminance.
+        float leafness = smoothstep(.20, .38,
+                                    dot(impostor.rgb, vec3(.2126, .7152, .0722)));
+        albedo = impostor.rgb * mix(vec3(1.0), vColor, leafness);
+        vec2 toCam = uCamPos.xy - vWorld.xy;
+        float len = length(toCam);
+        toCam = len > 1e-4 ? toCam / len : vec2(0.0, 1.0);
+        // A crown is lit as a rounded volume, not as a flat card facing the eye.
+        N = normalize(vec3(toCam * .35, .93));
+        Nd = N;
+    } else if (vPart > 0.5) {
         albedo = vColor * leaf.rgb;
         vec2 tilt = detail.rg * 2.0 - 1.0;
         Nd = normalize(T * tilt.x + B * tilt.y + N * sqrt(max(.05, 1.0 - dot(tilt, tilt))));
@@ -116,7 +158,8 @@ void main() {
     float sf = shadowPCF(vWorld, N, L, worldDx, worldDy);
     float NoL = max(dot(Nd, L), 0.0);
     float diff = vPart > .5 ? max((dot(Nd, L) + .16) / 1.16, 0.0) : NoL;
-    vec3 direct = albedo * uSunColor * diff * sf / PI;
+    float crownLight = vPart > .5 ? mix(vCrown, 1.0, .35 * sf) : 1.0;   // sunlit leaves are less occluded
+    vec3 direct = albedo * uSunColor * diff * sf / PI * crownLight;
     if (vPart > 0.5) {
         // Restrained thin-leaf transmission; no yellow/neon-green fill boost.
         float back = pow(max(dot(V, -L), 0.0), 3.0);
@@ -130,10 +173,10 @@ void main() {
         float k = (rough + 1.0) * (rough + 1.0) / 8.0;
         float G = NoV / (NoV * (1.0 - k) + k) * NoL / (NoL * (1.0 - k) + k + 1e-4);
         float F = .028 + .972 * pow(1.0 - max(dot(V, H), 0.0), 5.0);
-        direct += uSunColor * sf * D * G * F / (4.0 * NoV) * .55;
+        direct += uSunColor * sf * D * G * min(F, .25) / (4.0 * NoV) * .16;
     }
     float skyVisibility = vPart > .5 ? .48 + .27 * max(N.z, 0.0) : .52;
-    vec3 ambient = uAmbColor * albedo * skyVisibility * cavity;
+    vec3 ambient = uAmbColor * albedo * skyVisibility * cavity * (vPart > .5 ? vCrown : 1.0);
     vec3 lit = direct + ambient;
     lit = max(lit, albedo * uAmbColor * 0.04);
 
@@ -152,5 +195,53 @@ uniform sampler2D uLeafTex;
 void main() {
     vec2 texDx = dFdx(vTexUV), texDy = dFdy(vTexUV);
     if (vPart > 0.5 && textureGrad(uLeafTex, vTexUV, texDx, texDy).a < LEAF_ALPHA_CUTOFF) discard;
+}
+"""
+
+
+# Startup bake for the tree impostor atlas.  The production tree template is
+# rasterised from four horizontal directions into a 2x2 RGBA8 atlas; the scene
+# shader then expands one camera-facing quad and samples the view that faces the
+# eye.  Lighting stays dynamic, so only albedo, alpha and crown occlusion are
+# baked here.
+TREE_IMPOSTOR_VS = """
+#version 330 core
+layout(location=0) in vec3 aPos;
+layout(location=2) in vec3 aColor;
+layout(location=3) in float aPart;
+layout(location=7) in vec2 aUV;
+layout(location=8) in float aCardSeed;
+uniform mat4 uBakeMatrix;
+out vec3 vColor; out float vPart; out vec2 vUV; out float vCard; out float vCrown;
+void main() {
+    gl_Position = uBakeMatrix * vec4(aPos, 1.0);
+    vColor = aColor;
+    vPart = aPart;
+    vUV = aUV;
+    vCard = aCardSeed;
+    float rad = length(aPos.xy) / 3.4;
+    float up = clamp((aPos.z - 3.6) / 6.4, 0.0, 1.0);
+    vCrown = aPart > 0.5 ? mix(.42, 1.0, smoothstep(.10, 1.05, rad * .75 + up * .55)) : 1.0;
+}
+"""
+
+TREE_IMPOSTOR_FS = """
+#version 330 core
+in vec3 vColor; in float vPart; in vec2 vUV; in float vCard; in float vCrown;
+uniform sampler2D uLeafTex;
+out vec4 FragColor;
+""" + TREE_ALPHA_TEST + """
+void main() {
+    vec3 albedo = vColor;
+    if (vPart > 0.5) {
+        float variant = floor(fract(0.37 + vCard) * 4.0);
+        vec2 uv = (vUV + vec2(mod(variant, 2.0), floor(variant * .5))) * .5;
+        vec4 leaf = textureLod(uLeafTex, uv, 0.0);
+        if (leaf.a < LEAF_ALPHA_CUTOFF) discard;
+        // Crown occlusion is baked into the albedo; dynamic sun/shadow lighting
+        // still runs per frame in TREE_FS.
+        albedo = vColor * leaf.rgb * mix(.70, 1.0, vCrown);
+    }
+    FragColor = vec4(albedo, 1.0);
 }
 """

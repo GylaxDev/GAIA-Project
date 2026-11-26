@@ -33,12 +33,12 @@ from ..vehicles.vehicle_instances import (VEHICLE_STRIDE, LAMPS, BRAKE, LEFT, RI
                                 LENGTHS, WHEELBASES, WHEEL_RADII, HEAVY,
                                 VehicleFrame, predict_instances)
 
-KINDS = 10
+KINDS = 9
 PAINTS = np.array([(.90, .90, .90), (.90, .90, .90), (.68, .69, .72),
                    (.68, .69, .72), (.04, .04, .045), (.04, .04, .045),
                    (.30, .31, .33), (.10, .16, .34), (.62, .07, .07),
                    (.08, .22, .14), (.55, .45, .30)], np.float32)
-KIND_PROBABILITIES = [.28, .12, .10, .04, .04, .10, .08, .03, .14, .07]
+KIND_PROBABILITIES = [.30, .12, .10, .04, .04, .10, .08, .15, .07]
 
 
 @dataclass(frozen=True, slots=True)
@@ -426,7 +426,6 @@ class TrafficCore:
         paint = PAINTS[int(self.rng.integers(len(PAINTS)))].copy() if color is None else np.asarray(color, np.float32)
         if kind == 5: paint = np.array([.98, .80, .05], np.float32)
         elif kind == 3: paint = np.array([.72, .12, .12], np.float32)
-        elif kind == 7: paint = np.array([.20, .42, .24], np.float32)
         elif kind == 6: paint = np.array([.90, .90, .88], np.float32)
         f.color[i], f.routes[i] = paint, route
         f.origin[i], f.destination[i] = graph.nodes[route.origin].key, graph.nodes[route.destination].key

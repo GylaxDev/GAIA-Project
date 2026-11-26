@@ -15,14 +15,15 @@ from . import icons
 from . import theme as T
 from .menu_ui import Page, frame_rect
 from . import ui_kit
-from .ui_kit import (alpha, bar, button, caps, caps_w, chip, close_button, ease_out_expo, frame, heading, inside,
-                     keycaps, mix, paragraph, scrollbar, segmented, slider, spring, stepper, toggle, toggle_rect)
+from .ui_kit import (alpha, bar, button, caps, caps_w, chip, close_button, ease_out_expo, frame, glass, heading,
+                     inside, keycaps, mix, paragraph, scrollbar, segmented, slider, spring, stepper, toggle,
+                     toggle_rect)
 
 ROW_H, ROW_H_PLAIN = 46.0, 46.0
 SECTION_H, SECTION_GAP = 30.0, 10.0
 FOOTER_H = 0.0
-TAB_Y, TAB_H = 48.0, 42.0
-LIST_Y = 128.0
+TAB_Y, TAB_H = 96.0, 42.0
+LIST_Y = 172.0
 
 
 class SettingsPage(Page):
@@ -83,7 +84,7 @@ class SettingsPage(Page):
         vy = LIST_Y
         vh = h - T.HINT_BAR_H - vy - 18
         return dict(frame=(0.0, 0.0, w, h), compact=not wide, rail_w=0.0, cx=x0, cw=list_w, vy=vy, vh=vh,
-                    footer_y=vy + vh, panel=(panel_x, vy, w - x0 - panel_x, 250.0) if wide else None, x0=x0)
+                    footer_y=vy + vh, panel=(panel_x, vy, w - x0 - panel_x, 218.0) if wide else None, x0=x0)
 
     def _plan(self, cat, ui, cw):
         """Flat list of ``(kind, obj, y, h)`` for a category, plus the total height."""
@@ -149,15 +150,18 @@ class SettingsPage(Page):
         self.focus = max(0, min(self.focus, max(0, len(interactive) - 1)))
         focused = interactive[self.focus] if interactive else None
 
-        for kind, obj, y, rh in plan:
+        for index, (kind, obj, y, rh) in enumerate(plan):
             top = vy + y - off
             if top > vy + vh or top + rh < vy - 6:
                 continue
             if kind == "section":
                 if obj[0]:
-                    caps(ui, "// " + obj[0], cx, top + 6, T.T_CAPTION_2, T.TEXT_TERTIARY, "medium")
+                    caps(ui, obj[0], cx, top + 6, T.T_FOOTNOTE, T.TEXT_TERTIARY, "semibold")
+                # One rounded card holds the whole group, like a Settings list.
+                glass(ui, cx, top + SECTION_H - 6, cw, obj[1] + 6, T.R_CARD, "menu")
             elif kind == "row":
-                self._draw_row(ui, obj, (cx, top, cw, rh), mouse, obj is focused)
+                nxt = plan[index + 1][0] if index + 1 < len(plan) else None
+                self._draw_row(ui, obj, (cx, top, cw, rh), mouse, obj is focused, last=nxt != "row")
             else:
                 self._draw_controls(ui, obj, cx, top, cw, vy, vh)
 
@@ -167,50 +171,64 @@ class SettingsPage(Page):
 
     def _draw_tabs(self, ui, g, mouse, w):
         x = g["x0"]
-        n = len(self.store.categories)
-        kw = keycaps(ui, x, TAB_Y + (TAB_H - 21) / 2, "Q", 11)
-        x += kw + 14
-        pad = 24.0
-        widths = [caps_w(ui, c.label, T.T_SUBHEAD - 1) + 2 * pad for c in self.store.categories]
-        room = w - x - g["x0"] - 40
+        ui.text("Settings", x, 40, 30, T.TEXT_PRIMARY, weight="semibold")
+        x = g["x0"]
+        pad = 22.0
+        widths = [ui.text_w(c.label, T.T_CALLOUT, weight="medium") + 2 * pad
+                  for c in self.store.categories]
+        room = w - x - g["x0"]
         if sum(widths) > room:
-            pad = max(10.0, pad * room / sum(widths))
-            widths = [caps_w(ui, c.label, T.T_SUBHEAD - 1) + 2 * pad for c in self.store.categories]
+            pad = max(8.0, pad * room / sum(widths))
+            widths = [ui.text_w(c.label, T.T_CALLOUT, weight="medium") + 2 * pad
+                      for c in self.store.categories]
+        if sum(widths) > room:
+            k = room / sum(widths)
+            widths = [v * k for v in widths]
+        total = sum(widths)
+        ui.box(x, TAB_Y, total, TAB_H, TAB_H / 2, (1.0, 1.0, 1.0, 0.075), (1.0, 1.0, 1.0, 0.07))
         for i, c in enumerate(self.store.categories):
             r = (x, TAB_Y, widths[i], TAB_H)
             sel = i == self.cat
             hov = spring(ui, ("set_cat", i), float(inside(r, *mouse)), T.SPRING_GENTLE)
             self.hits.add(r, "cat", i)
             if sel:
-                ui.rect(*r, T.WD_BLUE)
+                ui.box(r[0] + 2, r[1] + 2, r[2] - 4, r[3] - 4, (r[3] - 4) / 2,
+                       (1.0, 1.0, 1.0, 0.94), None, shadow=8.0, shadow_dy=2.0, shadow_alpha=0.22)
             elif hov > 0.01:
-                ui.rect(*r, (1.0, 1.0, 1.0, 0.10 * hov))
-            caps(ui, c.label, r[0] + r[2] / 2, r[1] + r[3] / 2, T.T_SUBHEAD - 1,
-                 T.WD_GREEN if (sel or hov > 0.4) else scale_green(T.WD_GREEN), "medium", anchor="center", vcenter=True)
+                ui.box(r[0] + 2, r[1] + 2, r[2] - 4, r[3] - 4, (r[3] - 4) / 2,
+                       (1.0, 1.0, 1.0, 0.07 * hov))
+            ui.text_c(c.label, r[0] + r[2] / 2, r[1] + r[3] / 2, T.T_CALLOUT,
+                      (0.06, 0.06, 0.07, 0.95) if sel else mix(T.TEXT_SECONDARY, T.WHITE, hov),
+                      anchor="center", weight="semibold")
             x += widths[i]
-        keycaps(ui, x + 8, TAB_Y + (TAB_H - 21) / 2, "E", 11)
 
     # ------------------------------------------------------------------ rows
-    def _draw_row(self, ui, s, rect, mouse, focused):
+    def _draw_row(self, ui, s, rect, mouse, focused, last=False):
         x, y, w, h = rect
-        bh = h - 4
+        bh = h
         enabled = s.is_enabled()
-        r = (x, y, w, bh)
+        r = (x + 4, y + 2, w - 8, bh - 4)
         hov = spring(ui, ("set_row", s.id),
                      float(inside(r, *mouse) and enabled and inside(self.view, *mouse)), T.SPRING_GENTLE)
-        lit = (focused or hov > 0.5) and enabled
+        lit = focused and enabled
         if enabled:
             self.hits.add(r, "row", s, clip=self.view)
-        bar(ui, x, y, w, bh, hover=0.0, selected=lit, enabled=enabled)
+        if hov > 0.01:
+            ui.box(*r, T.R_5, (1.0, 1.0, 1.0, 0.07 * hov))
+        if lit:
+            ui.box(*r, T.R_5, (T.SYS_BLUE[0] * 0.55 + 0.10, T.SYS_BLUE[1] * 0.55 + 0.12,
+                               T.SYS_BLUE[2] * 0.55 + 0.18, 0.90), (1.0, 1.0, 1.0, 0.12))
+        elif not last:
+            ui.rect(x + 18, y + bh - 1, w - 36, 1.0 / ui.scale, T.SEPARATOR)
 
         col = T.TEXT_PRIMARY if enabled else T.TEXT_QUATERNARY
         ctrl_w = min(390.0, w * 0.56)
         label_w = w - ctrl_w - 34
-        label = ("// " if lit else "") + s.label
-        lw = ui.text_c(ui.fit(label, T.T_CALLOUT, label_w, weight="medium"), x + 18, y + bh / 2, T.T_CALLOUT, col,
+        lw = ui.text_c(ui.fit(s.label, T.T_CALLOUT, label_w, weight="medium"), x + 18, y + bh / 2, T.T_CALLOUT, col,
                        weight="medium")
         if s.note:
-            chip(ui, x + 18 + min(lw, label_w) + 12, y + (bh - 18) / 2, s.note, T.WD_AMBER, T.T_CAPTION_1, h=18, pad=7)
+            chip(ui, x + 18 + min(lw, label_w) + 12, y + (bh - 20) / 2, s.note,
+                 (1.0, 1.0, 1.0, 0.9) if lit else T.SYS_ORANGE, T.T_CAPTION_1, h=20, pad=8)
 
         ctrl = (x + w - ctrl_w - 14, y, ctrl_w, bh)
         key = s.id
@@ -222,7 +240,7 @@ class SettingsPage(Page):
             vw = 64.0
             track = (ctrl[0] + vw + 22, y, ctrl_w - vw - 22, bh)
             self.slider_rects[s.id] = track
-            ui.text_c(s.text(), ctrl[0] + vw, y + bh / 2, T.T_BODY, T.WD_GREEN if enabled else T.TEXT_QUATERNARY,
+            ui.text_c(s.text(), ctrl[0] + vw, y + bh / 2, T.T_BODY, T.TEXT_PRIMARY if enabled else T.TEXT_QUATERNARY,
                       anchor="right", weight="medium")
             slider(ui, track, s.fraction(), key=key, enabled=enabled)
             if enabled:
@@ -237,7 +255,7 @@ class SettingsPage(Page):
             if enabled:
                 self.hits.add(rr, "action", s, clip=self.view)
         else:                                       # info
-            ui.text_c(ui.fit(s.text(), T.T_BODY, ctrl_w), x + w - 18, y + bh / 2, T.T_BODY, T.WD_GREEN,
+            ui.text_c(ui.fit(s.text(), T.T_BODY, ctrl_w), x + w - 18, y + bh / 2, T.T_BODY, T.TEXT_SECONDARY,
                       anchor="right", weight="medium")
 
     def _draw_choice(self, ui, s, ctrl, mouse, focused, enabled):
@@ -268,10 +286,12 @@ class SettingsPage(Page):
                 y = top + y0
                 gh = len(rows) * row
                 if y < vy + vh and y + 30 + gh > vy:
-                    caps(ui, "// " + title, x, y + 4, T.T_CAPTION_2, T.TEXT_TERTIARY, "medium")
+                    caps(ui, title, x, y + 4, T.T_FOOTNOTE, T.TEXT_TERTIARY, "semibold")
+                    glass(ui, x, y + 26, col_w, gh + 2, T.R_CARD, "menu")
                     for i, (key, what) in enumerate(rows):
                         ry = y + 28 + i * row
-                        ui.rect(x, ry, col_w, row - 3, T.BAR)
+                        if i < len(rows) - 1:
+                            ui.rect(x + 16, ry + row - 2, col_w - 32, 1.0 / ui.scale, T.SEPARATOR)
                         keycaps(ui, x + 12, ry + (row - 3 - 21) / 2, key, 11)
                         ui.text_c(ui.fit(what, T.T_BODY, col_w - 12 - key_w - 14), x + 12 + key_w, ry + (row - 3) / 2,
                                   T.T_BODY, T.TEXT_PRIMARY)
@@ -281,18 +301,19 @@ class SettingsPage(Page):
         bx = g["cx"] + g["cw"] + 44 if panel else g["cx"]
         if panel:
             px, py, pw, ph = panel
-            ui.rect(px, py, pw, ph, T.PANEL_BG)
+            glass(ui, px, py, pw, ph, T.R_CARD + 4, "menu")
             title = focused.label if focused is not None else cat.label
-            frame(ui, px, py, pw, ph, T.LINE, title=title)
+            ui.text(ui.fit(title, T.T_TITLE_2, pw - 44), px + 22, py + 20, T.T_TITLE_2,
+                    T.TEXT_PRIMARY, weight="semibold")
             if cat.custom == "controls":
-                text = "Hold Q while on foot to profile nearby people."
+                text = "Every action, grouped by what it does. Press any key to try it."
             elif focused is not None:
                 text = focused.desc or cat.blurb
             else:
                 text = cat.blurb
-            paragraph(ui, text, px + 22, py + 34, pw - 44, T.T_BODY, T.TEXT_PRIMARY, lead=21, max_lines=6)
+            paragraph(ui, text, px + 22, py + 54, pw - 44, T.T_BODY, T.TEXT_SECONDARY, lead=21, max_lines=7)
             if focused is not None and focused.note:
-                ui.text(focused.note, px + 22, py + ph - 34, T.T_CAPTION_2, T.WD_AMBER, weight="medium")
+                ui.text(focused.note, px + 22, py + ph - 34, T.T_CAPTION_2, T.SYS_ORANGE, weight="medium")
             by = py + ph + 14
         else:
             by = g["vy"] + g["vh"] + 4
@@ -443,5 +464,3 @@ def spec_height(spec):
     return max((sum(26.0 + len(rows) * spec["row"] + 14.0 for _, rows, _ in groups)
                 for groups in spec["columns"]), default=0.0)
 
-def scale_green(c):
-    return (c[0], c[1], c[2], 0.62)

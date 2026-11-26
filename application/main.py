@@ -69,8 +69,8 @@ def main():
     g.add_argument("--no-prefetch", action="store_true")
     g.add_argument("--no-mesh-cache", action="store_true")
     g.add_argument("--no-process-pool", action="store_true")
-    # Older shortcuts still work; ground is always flat now.
-    g.add_argument("--no-terrain", action="store_true", help=argparse.SUPPRESS)
+    g.add_argument("--no-terrain", action="store_true",
+                   help="flatten the ground instead of sampling AWS DEM elevation")
     n = ap.add_argument_group("network")
     n.add_argument("--max-requests", type=int, default=3)
     n.add_argument("--min-interval", type=float, default=0.5)
@@ -119,7 +119,8 @@ def main():
         http_timeout=args.http_timeout,
         connect_timeout=args.connect_timeout,
         hedge_delay=args.hedge_delay,
-        race=1 if args.no_race else None)
+        race=1 if args.no_race else None,
+        terrain_enabled=not args.no_terrain)  # real ground relief from AWS DEM tiles
     fetcher.refresh = args.refresh
     cfg = StreamConfig(
         args.chunk_zoom, args.load_radius, args.retain_radius, args.workers,

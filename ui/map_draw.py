@@ -44,6 +44,8 @@ def stroke(ui, points, width, color, clip, valid=None, radius=0.):
 
 
 def route_stroke(ui, points, clip, valid=None, radius=0.):
+    # Wide, faint halo: the route glows softly against the frosted map.
+    stroke(ui, points, 15., (0.10, 0.48, 1., .14), clip, valid, radius)
     stroke(ui, points, 8., (0.015, 0.08, 0.19, .98), clip, valid, radius)
     stroke(ui, points, 5.5, (0.37, 0.72, 1., 1.), clip, valid, radius)
     stroke(ui, points, 3., BLUE, clip, valid, radius)
@@ -65,8 +67,9 @@ def project_world(flat, points, proj):
                      (wy - flat.cy) * flat.ppw() + flat.H * .5), axis=1).astype(np.float32)
 
 
-def place_symbol(ui, cx, cy, category, size=12.):
-    color = CATEGORY_COLORS.get(category, CATEGORY_COLORS["landmark"])
+def place_symbol(ui, cx, cy, category, size=12., mono=None):
+    """A category glyph in a disc.  ``mono`` overrides the category colour."""
+    color = mono if mono is not None else CATEGORY_COLORS.get(category, CATEGORY_COLORS["landmark"])
     ui.circle(cx, cy, size, (0.01, 0.025, 0.05, .8))
     ui.circle(cx, cy, size - 1.3, color)
     s = size * .44

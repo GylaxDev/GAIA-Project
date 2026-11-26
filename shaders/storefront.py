@@ -12,7 +12,7 @@ float shopOpen(float usage, vec4 h) {
 }
 
 vec3 shopRadiance(vec3 rd, vec2 uv, vec2 size, float usage, vec4 h, vec3 amb, vec2 footprint) {
-    float D = usage < .5 ? 7.5 : (usage < 1.5 ? 8.0 : (usage < 2.5 ? 10.0 : (usage < 3.5 ? 16.0 : 9.0)));
+    float D = usage < .5 ? 5.5 : (usage < 1.5 ? 6.0 : (usage < 2.5 ? 7.5 : (usage < 3.5 ? 11.0 : 6.5)));
     D *= mix(.88, 1.12, h.w);
     vec3 lamp = usage < .5 ? vec3(1.0, .86, .68) : vec3(1.0, .95, .85);
     return furnishedRoom(rd, uv, size, D, int(clamp(floor(usage + .5), 0., 4.)),

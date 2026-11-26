@@ -39,10 +39,9 @@ class AboutPage(Page):
         pad = 32
         logo_mark(ui, fx + pad, fy + 28, 60.0)
         size = T.T_DISPLAY - 6
-        pw_ = caps(ui, "Project", fx + pad + 78, fy + 32, size, T.TEXT_PRIMARY, "bold", track=0.16)
-        caps(ui, "GAIA", fx + pad + 78 + pw_ + size * 0.5, fy + 32, size, T.WD_GREEN, "bold", track=0.16)
-        ui.text(f"// {TAGLINE}  ·  Version {getattr(host, 'version', '1.0.0')}", fx + pad + 79, fy + 68, T.T_BODY - 1,
-                T.TEXT_TERTIARY)
+        ui.text("Project GAIA", fx + pad + 78, fy + 34, size, T.TEXT_PRIMARY, weight="semibold")
+        ui.text(f"{TAGLINE}  ·  Version {getattr(host, 'version', '1.0.0')}", fx + pad + 79, fy + 70,
+                T.T_BODY, T.TEXT_TERTIARY)
 
         body_w = fw - 2 * pad
         paragraph(ui, "Project GAIA lets you explore real places in 3D. Buildings, streets and terrain stream in from OpenStreetMap "

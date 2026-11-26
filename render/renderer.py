@@ -14,13 +14,18 @@ from ..core.config import BG_COLOR, MOON_COLOR
 from ..core.photometry import SUN_IRRADIANCE, NITS_PER_SCENE_UNIT, MOON_LUX, NIGHT_EXPOSURE_STOPS, DAY_EXPOSURE
 from ..world.data_fetcher import build_tree_template
 from ..world.foliage import build_leaf_textures, build_leaf_mipmaps
-from ..world.tree_models import TREE_CENTER_Z, TREE_RADIUS, tree_lod_levels
+from ..world.tree_models import (TREE_CENTER_Z, TREE_HEIGHT, TREE_RADIUS,
+                                 build_tree_billboard_template, tree_lod_levels)
+from ..world.tree_impostors import (TREE_IMPOSTOR_ATLAS, TREE_IMPOSTOR_TILE,
+                                    TREE_IMPOSTOR_VIEWS, build_tree_impostor_mipmaps)
 from ..world.ground_textures import build_ground_textures, build_ground_mipmaps
 from ..world.street_furniture import streetpole_template, LAMP_LENS_DROP
 from ..world.water_ripples import build_water_ripples, build_water_ripple_mipmaps
 from ..world.mesh_extruder import (MeshData, build_all_vehicle_templates,
                             _HEADLIGHT_COLOR, _TAILLIGHT_COLOR, _GROUND_GLOW_COLOR)
 from .lights import LightField
+from .billboard_textures import (TEXTURE_ASPECT as BILLBOARD_ASPECT,
+                                 load_billboard_images)
 from ..peds.pedestrian_renderer import PedestrianRenderer
 from .spill import SpillGrid
 from ..vehicles.vehicle_models import LED_COLOR as _LED_COLOR, animation_metadata
@@ -39,14 +44,15 @@ from ..shaders import (
     GROUND_VS, GROUND_FS,
     TERRAIN_FS,
     WATER_VS, WATER_FS,
-    TREE_VS, TREE_FS, SHADOW_TREE_FS,
+    TREE_VS, TREE_FS, SHADOW_TREE_FS, TREE_IMPOSTOR_VS, TREE_IMPOSTOR_FS,
     SHADOW_VS, SHADOW_FS, SHADOW_TREE_VS,
     STREETPOLE_VS, STREETPOLE_FS,
     SKID_VS, SKID_FS,
     CONTACT_VS, CONTACT_FS,
     VEHICLE_VS, VEHICLE_FS, VEHICLE_GLASS_MAT_FS, VEHICLE_SHADOW_VS, VEHICLE_SHADOW_FS,
     NEON_VS, NEON_FS,
-    BLOOM_VS, BLOOM_PREFILTER_FS, BLOOM_BLUR_FS, BLOOM_COMPOSITE_FS, STAR_FS, STAR_SRC_FS, STAR_STREAK_FS,
+    BLOOM_VS, BLOOM_PREFILTER_FS, BLOOM_BLUR_FS, BLOOM_COMPOSITE_FS, STAR_FS, STAR_SRC_FS,
+    STAR_STREAK_FS, SUN_FLARE_FS,
     AE_METER_FS, AE_ADAPT_FS, BLOOM_DOWN_FS,
     SSR_FS, mrt_fs, BUILDING_MAT, TERRAIN_MAT, WATER_MAT, VEHICLE_MAT, AO_FS,
 )
@@ -436,6 +442,7 @@ class Renderer:
     NEAR_SHADOW_UNIT = 9
     GROUND_TEXTURE_UNIT = 10
     WATER_RIPPLE_UNIT = 12
+    BILLBOARD_UNIT = 13
 
     def __init__(self, width, height, shadow_size=4096, shadows=True, *, vehicle_shadow_size=4096,
                   near_shadow_size=2048):
@@ -488,6 +495,7 @@ class Renderer:
         self.prog_star        = self._program(BLOOM_VS, STAR_FS)
         self.prog_star_src    = self._program(BLOOM_VS, STAR_SRC_FS)
         self.prog_star_streak = self._program(BLOOM_VS, STAR_STREAK_FS)
+        self.prog_sun_flare   = self._program(BLOOM_VS, SUN_FLARE_FS)
         self.prog_bloom_down  = self._program(BLOOM_VS, BLOOM_DOWN_FS)
         self.prog_ae_meter    = self._program(BLOOM_VS, AE_METER_FS)
         self.prog_ae_adapt    = self._program(BLOOM_VS, AE_ADAPT_FS)
@@ -510,6 +518,17 @@ class Renderer:
         self.leaf_tex, self.leaf_normal_tex = self._make_leaf_textures()
         self.ground_texture_enabled = True
         self.ground_tex = self._make_ground_texture()
+        self.billboard_tex = 0
+        self.billboard_count = 0
+        self.billboard_layers = []
+        self.billboard_texture_bytes = 0
+        self.billboard_anisotropy = 1.
+        self.billboard_error = None
+        try:
+            self.billboard_tex = self._make_billboard_texture()
+        except Exception as exc:
+            self.billboard_error = str(exc)
+            print(f"[billboards] textured screens disabled: {exc}")
         self.sky = compute_sky(13.0)
         self.stars_enabled = True
         self.constellations_enabled = False
@@ -573,7 +592,22 @@ class Renderer:
         sky_quad = np.array([[-1, -1], [1, -1], [1, 1], [-1, -1], [1, 1], [-1, 1]], np.float32)
         self.vao_sky, self._sky_bufs = self._vao(sky_quad, [(0, 2)])
 
+        self.pole_vertices, self.pole_indices = build_streetpole_template()
+        self.pole_indices_count = int(len(self.pole_indices))
+        self.pole_mesh_vbo = gl.glGenBuffers(1)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.pole_mesh_vbo)
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, self.pole_vertices.nbytes,
+                        self.pole_vertices, gl.GL_STATIC_DRAW)
+        self.pole_mesh_ebo = gl.glGenBuffers(1)
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.pole_mesh_ebo)
+        gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, self.pole_indices.nbytes,
+                        self.pole_indices, gl.GL_STATIC_DRAW)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
+        self.spill = SpillGrid(gl)
+        # Three geometric templates plus the 2D impostor card at level 3.
         self.tree_templates = [build_tree_template(level) for level in range(3)]
+        self.tree_templates.append(build_tree_billboard_template())
         self.tree_template_vbos, self.tree_template_ebos = [], []
         self.tree_template_counts = []
         for vertices, indices in self.tree_templates:
@@ -592,37 +626,19 @@ class Renderer:
         self.tree_mesh_vbo, self.tree_mesh_ebo = self.tree_template_vbos[0], self.tree_template_ebos[0]
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
-
-        self.pole_vertices, self.pole_indices = build_streetpole_template()
-        self.pole_indices_count = int(len(self.pole_indices))
-        self.pole_mesh_vbo = gl.glGenBuffers(1)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.pole_mesh_vbo)
-        gl.glBufferData(gl.GL_ARRAY_BUFFER, self.pole_vertices.nbytes,
-                        self.pole_vertices, gl.GL_STATIC_DRAW)
-        self.pole_mesh_ebo = gl.glGenBuffers(1)
-        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.pole_mesh_ebo)
-        gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, self.pole_indices.nbytes,
-                        self.pole_indices, gl.GL_STATIC_DRAW)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
-        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
-        self.spill = SpillGrid(gl)
-        self.tree_templates = [build_tree_template(level) for level in range(3)]
-        self.tree_template_vbos, self.tree_template_ebos = [], []
-        self.tree_template_counts = []
-        for vertices, indices in self.tree_templates:
-            vbo = gl.glGenBuffers(1)
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
-            gl.glBufferData(gl.GL_ARRAY_BUFFER, vertices.nbytes, vertices, gl.GL_STATIC_DRAW)
-            ebo = gl.glGenBuffers(1)
-            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, ebo)
-            gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, indices.nbytes, indices, gl.GL_STATIC_DRAW)
-            self.tree_template_vbos.append(vbo)
-            self.tree_template_ebos.append(ebo)
-            self.tree_template_counts.append(int(len(indices)))
-        tree_batches = [self._tree_vao(np.empty((0, 8), np.float32), level) for level in range(3)]
+        tree_batches = [self._tree_vao(np.empty((0, 8), np.float32), level)
+                        for level in range(len(self.tree_templates))]
         self.tree_batch_vaos = [vao for vao, _ in tree_batches]
         self.tree_batch_vbos = [vbo for _, vbo in tree_batches]
         self.tree_batch_vao, self.tree_batch_vbo = tree_batches[0]
+        self.tree_impostor_tex = 0
+        self.tree_impostor_bytes = 0
+        self.tree_impostor_error = None
+        try:
+            self.tree_impostor_tex = self._make_tree_impostor()
+        except Exception as exc:
+            self.tree_impostor_error = str(exc)
+            print(f"[trees] 2D impostors disabled: {exc}")
         self.pole_batch_vao, pb = self._streetpole_vao(np.empty((0, 9), np.float32))
         self.pole_batch_vbo = pb[0]
 
@@ -678,10 +694,11 @@ class Renderer:
 
         self._neon_pos = np.zeros((48, 3), np.float32)
         self._neon_col = np.zeros((48, 3), np.float32)
+        self._neon_scr = np.zeros((48, 4), np.float32)   # screens: normal xy, half width, half height
         self._neon_n = 0
         # Night neon sits at ~3-4 exposed HDR units, so the old 3.0 threshold (knee from 2.4) let almost
         # nothing bloom.  1.5 lets signs and lamps glow; strength is kept moderate.
-        self.bloom_strength = 0.14
+        self.bloom_strength = 0.12
         self.bloom_threshold = 1.5  # 20% soft knee starts at 1.2 exposed HDR units
         self._t0 = time.time()
         # GTA-style grade (V toggles).  grade_strength scales the whole look.
@@ -690,8 +707,8 @@ class Renderer:
         self.day_threshold = 4.0     # onset at 3.2: ordinary sunlit materials stay below bloom
         self.grade_strength = 1.0
         # Film look: 0 neutral, 1 Colorful, 2 Cinematic.  Cycled with V.
-        self.look = 3
-        self.LOOK_NAMES = ("Neutral", "Colorful", "Cinematic", "Cyberpunk")
+        self.look = 4
+        self.LOOK_NAMES = ("Neutral", "Colorful", "Cinematic", "Cyberpunk", "Natural")
         # Eye adaptation.  The scene buffer is linear HDR (already x sky.exposure); the meter
         # averages log luminance on the GPU and a 1x1 texture follows it with an
         # asymmetric time constant (the eye closes down faster than it opens up).
@@ -709,13 +726,13 @@ class Renderer:
         self.ae_fast_share = 0.35      # share of a sudden change the quick reflex answers at once
         self.ae_fast_rate = 5.0        # 1/s
         # Filmic contrast (linear light, pivoting on the adaptation key): 1 = none.
-        self.contrast = 1.28
+        self.contrast = 1.12
         self.ev_comp = 0.0             # manual exposure compensation (stops)
-        self.wide_glow = 0.04          # wide-angle lens scatter / halation around bright signs
+        self.wide_glow = 0.03          # wide-angle lens scatter / halation around bright signs
         self.streak_gain = 0.02        # anamorphic streak, Matrix look only
         self.letterbox = 0.0
         # Lens flare of a stopped-down lens (N toggles, Shift+N switches f/22 <-> f/14)
-        self.flare_enabled = True
+        self.flare_enabled = True      # lens-flare ghosts and star spikes are on by default (N toggles)
         self.flare_gain = 1.0
         self.flare_max_brightness = 0.25  # exposed-HDR luminance ceiling for the combined flare
         self.flare_fstop = 22.0
@@ -726,13 +743,21 @@ class Renderer:
         self.flare_star_gain = 1.0     # normalized starburst gain, shared by all diffraction axes
         self.flare_star_length = 0.5   # spike reach scale (1.0 = original length)
         self.flare_ghost_gain = 0.03   # ghosts, rainbow comet and halo
-        self.flare_star_day = 0.06     # daylight starburst share: the sun blooms as a soft disc, not spikes
+        self.flare_star_day = 0.0     # daylight starburst share: the sun blooms as a soft disc, not spikes
         # Soft circular sun bloom (post composite). 0 disables, 1 is the reference look.
-        self.sun_glare = 1.0
+        self.sun_glare = 0.35
         self.sun_glare_tint = (1.0, 0.93, 0.78)
+        # Dedicated cinematic sun flare (SUN_FLARE_FS): hot disc, chromatic halo,
+        # aperture ghosts and the anamorphic streak.  Independent of the opt-in
+        # highlight starburst above and visible by default.
+        self.sun_flare = 1.0
+        self.sun_flare_tint = (1.0, 0.93, 0.78)
+        self.sun_flare_max_brightness = 1.2   # exposed-HDR ceiling before tone mapping
+        self.sun_flare_ghost_gain = 1.0
+        self.sun_flare_streak_gain = 1.0
         # Floor on aerosol haze (0 = clear 25 km air, 1 = 1.2 km fog). A milky mid-distance
         # haze is a large part of Cinematic look; weather fog can only raise it.
-        self.haze_floor = 0.32
+        self.haze_floor = 0.24
         # Volumetric city haze (shaders/cityhaze.py): coloured, light-catching air with height fog,
         # drifting patches, neon halos and headlight shafts.  Tune live through ``city_haze``
         # (keys are HAZE_DEFAULTS); city_haze_enabled switches the pass off.
@@ -742,8 +767,8 @@ class Renderer:
         self._haze_floor_s = None
         self.haze_ok = False
         # Cinematic vignette (B toggles).  strength = darkening at the corners.
-        self.vignette = 0.18
-        self.vignette_start = 0.55
+        self.vignette = 0.10
+        self.vignette_start = 0.60
         # Camera motion blur (Settings panel).  Shutter length as a fraction of the frame
         # interval; the frame is gathered along each pixel's reprojection into the last one.
         self.motion_blur = self.MOTION_BLUR_DEFAULT
@@ -772,14 +797,16 @@ class Renderer:
         # within large chunks; vehicle LOD additionally follows projected size.
         # Everything past these distances is either fogged out or drawn by the
         # simplified far meshes, so the cut is not visible from the street.
-        self.lod = {"trees": 320.0, "props": 200.0, "vehicles": 480.0,
+        # Two-triangle impostors make the far tree band cheap, so the tree draw
+        # distance extends past the geometric LOD range.
+        self.lod = {"trees": 400.0, "props": 200.0, "vehicles": 480.0,
                     "edges": 320.0, "neon": 340.0}
         # Building LOD transition distance: close cells keep rooftop equipment,
         # everything further uses the simplified shell drawn for the skyline.
         self.building_lod_distance = 100.0
-        self.last_tree_lod_counts = [0, 0, 0]
+        self.last_tree_lod_counts = [0, 0, 0, 0]
         self.last_tree_tris = self.last_tree_shadow_tris = 0
-        self.last_tree_shadow_lod_counts = [0, 0, 0]
+        self.last_tree_shadow_lod_counts = [0, 0, 0, 0]
         self._tree_pixel_scale = float(height)
         self._dist_cache = {}
         self._shadow_dir = None      # held light direction (see _held_light_dir)
@@ -898,6 +925,148 @@ class Renderer:
             gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
         return textures
 
+    @staticmethod
+    def _tree_bake_matrix(view):
+        """Orthographic view of template space from one of the four atlas directions."""
+        angle = view * math.pi * .5
+        forward = np.array([math.cos(angle), math.sin(angle), 0.])
+        center = np.array([0., 0., TREE_HEIGHT * .5])
+        eye = center + forward * 32.
+        f = center - eye
+        f /= np.linalg.norm(f)
+        s = np.cross(f, [0., 0., 1.])
+        s /= np.linalg.norm(s)
+        u = np.cross(s, f)
+        view_m = np.eye(4)
+        view_m[0, :3], view_m[0, 3] = s, -s @ eye
+        view_m[1, :3], view_m[1, 3] = u, -u @ eye
+        view_m[2, :3], view_m[2, 3] = -f, f @ eye
+        half = TREE_HEIGHT * .5
+        near, far = 8., 56.
+        ortho = np.array([[1. / half, 0., 0., 0.],
+                          [0., 1. / half, 0., 0.],
+                          [0., 0., -2. / (far - near), -(far + near) / (far - near)],
+                          [0., 0., 0., 1.]])
+        return (ortho @ view_m).astype(np.float32)
+
+    def _make_tree_impostor(self):
+        """Bake the four-view tree atlas on the GPU, then build coverage-preserving mips.
+
+        The geometric template is far too heavy for a Python rasteriser, and the
+        atlas is only rebuilt once per renderer, so the production tree is drawn
+        into four 256 px orthographic cells.  Lighting stays dynamic: the bake
+        carries albedo, alpha and crown occlusion only.
+        """
+        gl = self.gl
+        side, tile = TREE_IMPOSTOR_ATLAS, TREE_IMPOSTOR_TILE
+        program = self._program(TREE_IMPOSTOR_VS, TREE_IMPOSTOR_FS)
+        color, depth = gl.glGenTextures(1), gl.glGenRenderbuffers(1)
+        fbo, vao = gl.glGenFramebuffers(1), gl.glGenVertexArrays(1)
+        previous_fbo = int(gl.glGetIntegerv(gl.GL_FRAMEBUFFER_BINDING))
+        previous_viewport = [int(v) for v in gl.glGetIntegerv(gl.GL_VIEWPORT)]
+        previous_clear = [float(v) for v in gl.glGetFloatv(gl.GL_COLOR_CLEAR_VALUE)]
+        previous_pack = int(gl.glGetIntegerv(gl.GL_PACK_ALIGNMENT))
+        previous_scissor = bool(gl.glIsEnabled(gl.GL_SCISSOR_TEST))
+        previous_box = [int(v) for v in gl.glGetIntegerv(gl.GL_SCISSOR_BOX)]
+        previous_cull = bool(gl.glIsEnabled(gl.GL_CULL_FACE))
+        previous_blend = bool(gl.glIsEnabled(gl.GL_BLEND))
+        try:
+            gl.glBindTexture(gl.GL_TEXTURE_2D, color)
+            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, side, side, 0,
+                            gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
+            for param, value in ((gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR),
+                                 (gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR),
+                                 (gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE),
+                                 (gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)):
+                gl.glTexParameteri(gl.GL_TEXTURE_2D, param, value)
+            gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, depth)
+            gl.glRenderbufferStorage(gl.GL_RENDERBUFFER, gl.GL_DEPTH_COMPONENT24, side, side)
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo)
+            gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0,
+                                      gl.GL_TEXTURE_2D, color, 0)
+            gl.glFramebufferRenderbuffer(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_ATTACHMENT,
+                                         gl.GL_RENDERBUFFER, depth)
+            status = gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER)
+            if status != gl.GL_FRAMEBUFFER_COMPLETE:
+                raise RuntimeError(f'incomplete tree impostor framebuffer (0x{status:x})')
+
+            gl.glBindVertexArray(vao)
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.tree_template_vbos[1])
+            stride = self.tree_templates[1][0].shape[1] * 4
+            for loc, size, off in ((0, 3, 0), (1, 3, 12), (2, 3, 24), (3, 1, 36),
+                                   (7, 2, 40), (8, 1, 48)):
+                gl.glEnableVertexAttribArray(loc)
+                gl.glVertexAttribPointer(loc, size, gl.GL_FLOAT, gl.GL_FALSE, stride,
+                                         ctypes.c_void_p(off))
+            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.tree_template_ebos[1])
+
+            gl.glUseProgram(program)
+            gl.glDisable(gl.GL_CULL_FACE)
+            gl.glDisable(gl.GL_BLEND)
+            gl.glEnable(gl.GL_DEPTH_TEST)
+            gl.glDepthMask(gl.GL_TRUE)
+            gl.glDepthFunc(gl.GL_LESS)
+            gl.glClearColor(0., 0., 0., 0.)
+            gl.glEnable(gl.GL_SCISSOR_TEST)
+            gl.glActiveTexture(gl.GL_TEXTURE0)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self.leaf_tex)
+            self._int(program, 'uLeafTex', 0)
+            for view in range(TREE_IMPOSTOR_VIEWS):
+                x, y = (view % 2) * tile, (view // 2) * tile
+                gl.glViewport(x, y, tile, tile)
+                gl.glScissor(x, y, tile, tile)
+                gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
+                self._mat(program, 'uBakeMatrix', self._tree_bake_matrix(view))
+                gl.glDrawElements(gl.GL_TRIANGLES, self.tree_template_counts[1],
+                                  gl.GL_UNSIGNED_INT, None)
+            gl.glDisable(gl.GL_SCISSOR_TEST)
+            gl.glReadBuffer(gl.GL_COLOR_ATTACHMENT0)
+            gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
+            raw = gl.glReadPixels(0, 0, side, side, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE)
+            atlas = np.frombuffer(raw, np.uint8).reshape(side, side, 4).copy()
+            levels = build_tree_impostor_mipmaps(atlas)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, color)
+            for level, data in enumerate(levels):
+                gl.glTexImage2D(gl.GL_TEXTURE_2D, level, gl.GL_RGBA8,
+                                data.shape[1], data.shape[0], 0,
+                                gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, data)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER,
+                               gl.GL_LINEAR_MIPMAP_LINEAR)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAX_LEVEL, len(levels) - 1)
+            self.tree_impostor_bytes = sum(data.nbytes for data in levels)
+            return color
+        except BaseException:
+            gl.glDeleteTextures([color])
+            raise
+        finally:
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, previous_fbo)
+            gl.glViewport(*previous_viewport)
+            gl.glClearColor(*previous_clear)
+            gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, previous_pack)
+            gl.glScissor(*previous_box)
+            if previous_scissor:
+                gl.glEnable(gl.GL_SCISSOR_TEST)
+            else:
+                gl.glDisable(gl.GL_SCISSOR_TEST)
+            gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, 0)
+            gl.glBindVertexArray(0)
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
+            gl.glUseProgram(0)
+            gl.glDepthFunc(gl.GL_LEQUAL)
+            gl.glDeleteFramebuffers(1, [fbo])
+            gl.glDeleteRenderbuffers(1, [depth])
+            gl.glDeleteVertexArrays(1, [vao])
+            gl.glDeleteProgram(program)
+            if previous_cull:
+                gl.glEnable(gl.GL_CULL_FACE)
+            else:
+                gl.glDisable(gl.GL_CULL_FACE)
+            if previous_blend:
+                gl.glEnable(gl.GL_BLEND)
+            else:
+                gl.glDisable(gl.GL_BLEND)
+
     def _bind_leaf_texture(self, p):
         gl = self.gl
         gl.glActiveTexture(gl.GL_TEXTURE0 + 4)
@@ -908,6 +1077,11 @@ class Renderer:
             gl.glActiveTexture(gl.GL_TEXTURE0 + 3)
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.leaf_normal_tex)
             gl.glUniform1i(normal_loc, 3)
+        impostor_loc = self._loc(p, 'uTreeImpostorTex')
+        if impostor_loc >= 0:
+            gl.glActiveTexture(gl.GL_TEXTURE0 + 5)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self.tree_impostor_tex)
+            gl.glUniform1i(impostor_loc, 5)
         gl.glActiveTexture(gl.GL_TEXTURE0)
 
     def release_vegetation(self):
@@ -917,13 +1091,15 @@ class Renderer:
             gl.glDeleteVertexArrays(1, [vao])
         for buf in self.tree_template_vbos + self.tree_template_ebos + self.tree_batch_vbos:
             gl.glDeleteBuffers(1, [buf])
-        textures = [tex for tex in (self.leaf_tex, self.leaf_normal_tex) if tex]
+        textures = [tex for tex in (self.leaf_tex, self.leaf_normal_tex,
+                                    self.tree_impostor_tex) if tex]
         if textures:
             gl.glDeleteTextures(textures)
         self.tree_batch_vaos, self.tree_batch_vbos = [], []
         self.tree_template_vbos, self.tree_template_ebos = [], []
         self.tree_mesh_vbo = self.tree_mesh_ebo = self.tree_batch_vao = self.tree_batch_vbo = 0
-        self.leaf_tex = self.leaf_normal_tex = self.vegetation_texture_bytes = 0
+        self.leaf_tex = self.leaf_normal_tex = self.tree_impostor_tex = 0
+        self.vegetation_texture_bytes = self.tree_impostor_bytes = 0
         self.release_ground_texture()
 
     def _make_ground_texture(self):
@@ -976,6 +1152,67 @@ class Renderer:
         if self.ground_tex:
             self.gl.glDeleteTextures([self.ground_tex])
         self.ground_tex = self.ground_texture_bytes = 0
+
+    def _make_billboard_texture(self):
+        """One shared 16:9 texture array of the drop-in Times Square creatives."""
+        from OpenGL.extensions import hasGLExtension
+        gl = self.gl
+        frames, paths = load_billboard_images()
+        self.billboard_layers = [path.name for path in paths]
+        self.billboard_anisotropy = 1.
+        if frames is None:
+            return 0
+        count, height, width, _ = frames.shape
+        previous = int(gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D_ARRAY))
+        alignment = int(gl.glGetIntegerv(gl.GL_UNPACK_ALIGNMENT))
+        tex = gl.glGenTextures(1)
+        try:
+            gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, tex)
+            # Image rows are top-down; OpenGL's texture origin is bottom-left.
+            gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_RGBA8,
+                            width, height, count, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE,
+                            np.ascontiguousarray(frames[:, ::-1]))
+            for param, value in ((gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR_MIPMAP_LINEAR),
+                                 (gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR),
+                                 (gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE),
+                                 (gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)):
+                gl.glTexParameteri(gl.GL_TEXTURE_2D_ARRAY, param, value)
+            gl.glGenerateMipmap(gl.GL_TEXTURE_2D_ARRAY)
+            # Screens stand at a steep angle to the street, exactly like the ground: filter
+            # along the compressed axis or a panel's creative dissolves into a lattice.
+            if hasGLExtension('GL_EXT_texture_filter_anisotropic'):
+                from OpenGL.GL.EXT.texture_filter_anisotropic import (
+                    GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, GL_TEXTURE_MAX_ANISOTROPY_EXT)
+                self.billboard_anisotropy = min(8., float(gl.glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT)))
+                gl.glTexParameterf(gl.GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_ANISOTROPY_EXT,
+                                   self.billboard_anisotropy)
+            self.billboard_texture_bytes = int(frames.nbytes * 4 / 3)
+            self.billboard_count = int(count)
+            return int(tex)
+        except BaseException:
+            gl.glDeleteTextures([tex])
+            raise
+        finally:
+            gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, alignment)
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, previous)
+
+    def _bind_billboard_texture(self, p):
+        gl = self.gl
+        gl.glActiveTexture(gl.GL_TEXTURE0 + self.BILLBOARD_UNIT)
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.billboard_tex)
+        self._int(p, "uBillboards", self.BILLBOARD_UNIT)
+        self._int(p, "uBillboardCount", self.billboard_count)
+        self._float(p, "uBillboardAspect", BILLBOARD_ASPECT)
+        self._float(p, "uBillboardOn", float(bool(self.billboard_tex and self.billboard_count)))
+        gl.glActiveTexture(gl.GL_TEXTURE0)
+
+    def release_billboards(self):
+        if self.billboard_tex:
+            self.gl.glDeleteTextures([self.billboard_tex])
+        self.billboard_tex = self.billboard_count = self.billboard_texture_bytes = 0
+        self.billboard_anisotropy = 1.
+        self.billboard_layers = []
 
     def _make_water_texture(self):
         """Four shared spectral fields; retain no CPU bake arrays or per-tile maps."""
@@ -1498,8 +1735,11 @@ class Renderer:
             distance = np.linalg.norm(pos[mask] - self._eye, axis=1)
             levels = tree_lod_levels(rows[:, 3], pixel_scale=self._tree_pixel_scale, distances=distance,
                                      texel=tree_light.texel if tree_light is not None else None)
-            counts = [0, 0, 0]
-            for level in range(3):
+            # Shadow maps keep geometry: a camera-facing card is not a useful caster.
+            if tree_light is not None or not self.tree_impostor_tex:
+                levels = np.where(levels > 2, 2, levels)
+            counts = [0, 0, 0, 0]
+            for level in range(4):
                 selected = np.ascontiguousarray(rows[levels == level])
                 counts[level] = len(selected)
                 if not len(selected): continue
@@ -2031,21 +2271,57 @@ class Renderer:
             pools = [c.neon_cpu for c in chunks
                      if c.neon_cpu is not None and len(c.neon_cpu)]
             n = 0
+            self._neon_pos[:] = 0.0; self._neon_col[:] = 0.0; self._neon_scr[:] = 0.0
             if pools:
                 allv = np.vstack(pools)
                 tx, ty = float(cam.target[0]), float(cam.target[1])
+                tz = float(cam.target[2]) if len(cam.target) > 2 else 0.0
+                # Rows: xyz, rgb, then (screens only) normal xyz, half width, half height.
+                width = allv.shape[1]
+                nrm = allv[:, 6:9] if width >= 11 else np.zeros((len(allv), 3), np.float32)
+                ext = allv[:, 9:11] if width >= 11 else np.zeros((len(allv), 2), np.float32)
+                is_screen = ((nrm[:, :2] ** 2).sum(axis=1) > .25) & (ext[:, 0] > 0.) & (ext[:, 1] > 0.)
                 d2 = (allv[:, 0] - tx) ** 2 + (allv[:, 1] - ty) ** 2
+                # Big LED screens outrank small signs: shrink their effective distance by
+                # their strength so a Times Square block is not crowded out by vertex samples.
+                strength = np.maximum(allv[:, 3:6].max(axis=1), 1.0)
+                # A screen only lights what is in front of its glass, so one that faces away
+                # from the view target must not take a slot from one that faces it.
+                facing = np.ones(len(allv), np.float64)
+                if is_screen.any():
+                    glass = allv[is_screen, 0:3] - nrm[is_screen] * 3.0   # SCREEN_LIGHT_SETBACK
+                    to_t = np.stack((tx - glass[:, 0], ty - glass[:, 1], tz - glass[:, 2]), 1)
+                    dist = np.maximum(np.linalg.norm(to_t, axis=1), 1.0)
+                    cos_e = np.clip((to_t * nrm[is_screen]).sum(axis=1) / dist, 0., 1.)
+                    facing[is_screen] = .15 + cos_e
+                d2 = d2 / (strength * facing) ** 2
                 k = min(48, len(allv))
                 idx = (np.argpartition(d2, k - 1)[:k] if len(allv) > k
                        else np.arange(len(allv)))
-                self._neon_pos[:] = 0.0; self._neon_col[:] = 0.0
                 self._neon_pos[:k] = allv[idx, 0:3]
-                self._neon_col[:k] = allv[idx, 3:6]
+                col = allv[idx, 3:6].astype(np.float32)
+                # Signs light their surroundings with a warm, mostly neutral spill, not their raw
+                # saturated pink / cyan: keeps the street lit without coloured light blobs.
+                lum = (col @ np.array([.2126, .7152, .0722], np.float32))[:, None]
+                warm = lum * np.array([1., .86, .66], np.float32)
+                scr = is_screen[idx][:, None]
+                # Screens keep far more of their ad colour, so the pool of light on the street
+                # and on the opposite facades is visibly the colour of what is on the screen.
+                col = np.where(scr, col * .45 + warm * .55, col * .22 + warm * .78)
+                self._neon_col[:k] = col
+                sel = idx[is_screen[idx]]
+                rows = np.flatnonzero(is_screen[idx])
+                if len(sel):
+                    xy = nrm[sel, :2]
+                    xy = xy / np.maximum(np.linalg.norm(xy, axis=1, keepdims=True), 1e-6)
+                    self._neon_scr[rows, 0:2] = xy
+                    self._neon_scr[rows, 2:4] = ext[sel]
                 n = int(k)
             self._neon_n = n
         n = self._neon_n
         gl.glUniform3fv(self._loc(p, "uNeonPos[0]"), 48, self._neon_pos.ravel())
         gl.glUniform3fv(self._loc(p, "uNeonCol[0]"), 48, self._neon_col.ravel())
+        gl.glUniform4fv(self._loc(p, "uNeonScr[0]"), 48, self._neon_scr.ravel())
         self._int(p, "uNumNeon", n)
 
     def _draw_precip(self, cam, weather, sky, fog_near, fog_far, view, proj, eye):
@@ -2207,7 +2483,13 @@ class Renderer:
         key = self.ae_key_day * (1.0 - night) + self.ae_key_night * night
         # Bias the adaptation target, not the lights or display gamma. At the
         # default strength this lifts exposure by 0.45 stops, within the EV bounds.
-        return key * 2.0 ** self.ae_brightness
+        # A camera exposes an overcast day high-key and lets a thunderstorm stay dark; without
+        # this the meter drags every weather back to the same mid-grey and the sky looks flat.
+        storm = float(np.clip(getattr(self, '_storm', 0.0), 0.0, 1.0))
+        cloud = float(np.clip(getattr(self, '_cloud', 0.0), 0.0, 1.0))
+        rain = float(np.clip(getattr(self, '_rain', 0.0), 0.0, 1.0))
+        weather_ev = 0.30 * cloud * (1.0 - storm) - 0.45 * rain * (1.0 - storm) - 1.35 * storm
+        return key * 2.0 ** (self.ae_brightness + weather_ev * (1.0 - night))
 
     def reset_eye_adaptation_settings(self):
         self.ae_enabled = True
@@ -2333,6 +2615,8 @@ class Renderer:
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6)
 
         # ---- wide glow: A -> 1/16 res, two blur pairs
+        sun_uv, sun_base = self._sun_frame()
+        sun_on = bool(hdr > 0.5 and self.sun_flare > 0.0 and sun_base > 0.0)
         flare_on = bool(hdr > 0.5 and self.flare_enabled and self.flare_gain > 0.0)
         wide_on = (self.wide_glow > 0.0 or flare_on) and hdr > 0.5
         if wide_on:
@@ -2358,6 +2642,26 @@ class Renderer:
                 self._vec2(p, "uDir", (0.0, 1.0))
                 gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6)
 
+        # ---- dedicated sun flare: disc, halo, aperture ghosts and anamorphic streak -> B
+        if sun_on:
+            p = self.prog_sun_flare
+            gl.glUseProgram(p)
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.bloom_fbo_b)
+            gl.glViewport(0, 0, self.bw, self.bh)
+            gl.glActiveTexture(gl.GL_TEXTURE0)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self.scene_depth_tex)
+            self._int(p, "uDepth", 0)
+            self._vec2(p, "uSunUV", sun_uv)
+            self._float(p, "uSunFlare", sun_base * float(self.sun_flare))
+            self._vec3(p, "uSunTint", self.sun_flare_tint)
+            self._float(p, "uAspect", self.width / max(1.0, float(self.height)))
+            self._float(p, "uNight", night_k)
+            self._float(p, "uTime", self._tshader())
+            self._float(p, "uReverseZ", float(self._reverse_active))
+            self._float(p, "uGhostGain", self.sun_flare_ghost_gain)
+            self._float(p, "uStreakGain", self.sun_flare_streak_gain)
+            gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6)
+
         # ---- screen-space lens flare: starburst + ghosts from the highlight textures -> B
         if flare_on:
             p = self.prog_star
@@ -2378,7 +2682,13 @@ class Renderer:
             night_f = 1.0 - 0.75 * night_k          # higher night exposure needs quieter lamp flares
             self._float(p, "uStarGain", 0.0)
             self._float(p, "uGhostGain", self.flare_ghost_gain * self.flare_gain * night_f)
+            # STAR_FS overwrites B, which would erase the sun flare; add instead.
+            if sun_on:
+                gl.glEnable(gl.GL_BLEND)
+                gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
             gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6)
+            if sun_on:
+                gl.glDisable(gl.GL_BLEND)
 
             # starburst: 4 axes x 4 passes, summed additively into B (under the ghosts)
             star_gain = (self.flare_star_gain * self.flare_gain * night_f
@@ -2455,8 +2765,11 @@ class Renderer:
         look = self._look_index()
         self._float(p, "uStrength", glow)
         self._float(p, "uWide", (self.wide_glow * (0.55 + 0.45 * night_k)) if (wide_on and self.wide_glow > 0.0) else 0.0)
-        self._float(p, "uFlareTexOn", 1.0 if flare_on else 0.0)
-        self._float(p, "uFlareMaxBrightness", self.flare_max_brightness)
+        self._float(p, "uFlareTexOn", 1.0 if (flare_on or sun_on) else 0.0)
+        flare_ceiling = self.flare_max_brightness
+        if sun_on:
+            flare_ceiling = max(flare_ceiling, self.sun_flare_max_brightness)
+        self._float(p, "uFlareMaxBrightness", flare_ceiling)
         self._float(p, "uStreak", self.streak_gain if (hdr > 0.5 and look == 2) else 0.0)
         self._vec2(p, "uResolution", (float(self.width), float(self.height)))
         self._float(p, "uNight", night_k)
@@ -2628,14 +2941,14 @@ class Renderer:
         gl.glActiveTexture(gl.GL_TEXTURE0)
         return self.haze_tex
 
-    def _sun_glare_params(self):
-        """Sun position in the frame (uv) and glare strength for the post composite.
+    def _sun_frame(self):
+        """Sun position in the frame (uv) and its un-gained visibility.
 
-        Strength follows the sun's own visibility (0 below the horizon) and is softened by
-        overcast; it is 0 while the sun is behind the camera.
+        Strength follows the sun's own intensity (0 below the horizon) and is
+        softened by overcast; it is 0 while the sun is behind the camera.
         """
         sky, vp = self.sky, self._last_vp
-        if sky is None or vp is None or self.sun_glare <= 0.0:
+        if sky is None or vp is None:
             return (0.5, 0.5), 0.0
         d = np.asarray(sky.sun_dir, np.float64)
         clip = np.asarray(vp, np.float64) @ np.array([d[0], d[1], d[2], 0.0])
@@ -2643,8 +2956,13 @@ class Renderer:
             return (0.5, 0.5), 0.0
         uv = clip[:2] / clip[3] * 0.5 + 0.5
         cloud = float(np.clip(self._cloud, 0.0, 1.0))
-        gain = float(sky.sun_intensity) * (1.0 - 0.5 * cloud) * float(self.sun_glare)
+        gain = float(sky.sun_intensity) * (1.0 - 0.5 * cloud)
         return (float(uv[0]), float(uv[1])), gain
+
+    def _sun_glare_params(self):
+        """Sun position and soft-glare strength for the post composite."""
+        uv, gain = self._sun_frame()
+        return uv, gain * float(self.sun_glare)
 
     def _grow(self, chunk, now=None):
         t = min(1.0, ((time.time() if now is None else now) - chunk.born) / self.GROW_TIME)
@@ -3127,10 +3445,16 @@ class Renderer:
         self._float(p, "uLightning", getattr(w, 'lightning', 0.0))
         night = _smoothstep(-2., -12., math.degrees(self.sky.alt))
         night_fill = .04 + .40 * self.sky.light_pollution + .15 * self.sky.moon_brightness * self.sky.moon_intensity
+        # Under cloud the city lights the deck from below: far brighter than the open night sky,
+        # and warm (sodium / LED sky-glow) rather than the cool moonlit blue.
+        cover = float(np.clip(self._cloud, 0., 1.))
+        warm = cover * float(np.clip(self.sky.light_pollution / .35, 0., 1.)) * .8
+        night_tint = np.array([.65, .72, .82]) * (1. - warm) + np.array([.90, .74, .58]) * warm
         cloud_light = (self.sky.amb * .52 * (1. - night)
-                       + np.array([.65, .72, .82]) * (night_fill / NITS_PER_SCENE_UNIT) * night)
+                       + night_tint * (night_fill * (1. + 5. * cover) / NITS_PER_SCENE_UNIT) * night)
         self._vec3(p, 'uCloudLight', cloud_light)
         self._vec3(p, 'uCloudSunLight', self.sky.cloud_sun if self.sky.cloud_sun is not None else self.sky.light)
+        self._vec3(p, 'uCloudSunDir', self.sky.sun_dir)
         origin = getattr(self, '_eye', np.zeros(3))
         self._vec3(p, 'uCloudOrigin', (float(origin[0]), float(origin[1]), self.sky.observer_height))
         if w is not None:
@@ -3307,14 +3631,16 @@ class Renderer:
         self._prev_car = None if cut else self._cur_car
         self._last_vp = np.asarray(proj, np.float64) @ np.asarray(view, np.float64)
         self._cloud = float(getattr(weather, "cloud", 0.0)) if weather is not None else 0.0
+        self._storm = float(getattr(weather, "storm", 0.0)) if weather is not None else 0.0
+        self._rain = float(getattr(weather, "rain", 0.0)) if weather is not None else 0.0
         eye = cam.position
         self._eye = np.asarray(eye, np.float64)
         eye = self._eye
         self._dist_cache = {}
         self.last_draw_calls = 0
         self.last_water_tris = 0
-        self.last_tree_lod_counts = [0, 0, 0]
-        self.last_tree_shadow_lod_counts = [0, 0, 0]
+        self.last_tree_lod_counts = [0, 0, 0, 0]
+        self.last_tree_shadow_lod_counts = [0, 0, 0, 0]
         self.last_tree_tris = self.last_tree_shadow_tris = 0
         self._tree_pixel_scale = self.height * abs(float(proj[1, 1])) * .5
         # Traffic/signals can arrive before any mesh is resident. They still
@@ -3733,6 +4059,7 @@ class Renderer:
         if not wireframe and any(c.s_count > 0 for c in vis):
             p = self.prog_neon
             gl.glUseProgram(p); common(p)
+            self._bind_billboard_texture(p)
             self._float(p, "uTime", self._tshader())
             gl.glEnable(gl.GL_DEPTH_TEST)
             gl.glDepthMask(gl.GL_FALSE)
@@ -3819,6 +4146,8 @@ class Renderer:
         gl.glActiveTexture(gl.GL_TEXTURE0 + self.GROUND_TEXTURE_UNIT)
         gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, 0)
         gl.glActiveTexture(gl.GL_TEXTURE0 + self.WATER_RIPPLE_UNIT)
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, 0)
+        gl.glActiveTexture(gl.GL_TEXTURE0 + self.BILLBOARD_UNIT)
         gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, 0)
         gl.glActiveTexture(gl.GL_TEXTURE0)
         self._depth_state(False)   # map, UI and default framebuffer use standard depth

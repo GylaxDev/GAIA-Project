@@ -1,8 +1,9 @@
 """Shared, deterministic broadleaf trees with a real woody branch hierarchy.
 
-The three projected-size LODs use the same skeleton/crown locations, not upright
-whole-tree billboards. Vertices retain the existing 13-float foliage contract;
-cached eight-float tree instances need no rebuild.
+Levels 0-2 are geometric LODs of one skeleton; level 3 is a camera-facing
+impostor quad that samples a baked four-view atlas. Every template keeps the
+existing 13-float foliage contract, so cached eight-float tree instances need no
+rebuild.
 """
 from __future__ import annotations
 
@@ -16,6 +17,11 @@ TREE_RADIUS = 6.5       # includes the shared shader's bounded instance deformat
 TREE_HEIGHT = 10.2
 # Optimized: lower pixel thresholds for earlier LOD transitions (was 200, 65)
 TREE_LOD_PIXELS = (150., 40.)
+# Below this projected height the geometric crown is replaced by a two-triangle
+# impostor.  Its square world window is TREE_BILLBOARD_SIZE wide and tall, which
+# covers the deformed crown (actual bounds are about 8.3 x 9.6 m).
+TREE_BILLBOARD_PIXELS = 28.
+TREE_BILLBOARD_SIZE = TREE_HEIGHT
 
 
 def _unit(v):
@@ -164,11 +170,11 @@ class _Builder:
     def cluster(self, center, direction, size, seed, level):
         """Equal-area near/middle sprays; coarser clusters share the same sites."""
         rng = np.random.default_rng(int(seed * 65536) + 91)
-        for _ in range((3, 2, 2)[level]):
+        for _ in range((5, 3, 2)[level]):
             offset = rng.uniform(-.17, .17, 3) * size
             axis = _unit(direction * .45 + _unit(rng.normal(size=3)) * .55 + [0., 0., .16])
             roll = float(rng.random())
-            self.spray(center + offset, axis, size * (.62, .76, .99)[level], roll, level)
+            self.spray(center + offset, axis, size * (.64, .82, 1.04)[level], roll, level)
 
     def finish(self):
         return (np.ascontiguousarray(self.vertices, np.float32),
@@ -224,12 +230,32 @@ def build_tree_template(level=0):
     return b.finish()
 
 
+def build_tree_billboard_template():
+    """Return the 13-float impostor quad used by tree LOD 3.
+
+    ``aPos.x`` is the horizontal corner and ``aPos.z`` the vertical one, so the
+    shared vertex shader can expand it in world space.  ``aPart = 2`` selects the
+    impostor atlas and the camera-facing transform.
+    """
+    half = TREE_BILLBOARD_SIZE * .5
+    vertices = np.array([
+        [-half, 0., 0., 0., 0., 1., 1., 1., 1., 2., 0., 0., 0.],
+        [half, 0., 0., 0., 0., 1., 1., 1., 1., 2., 1., 0., 0.],
+        [half, 0., TREE_BILLBOARD_SIZE, 0., 0., 1., 1., 1., 1., 2., 1., 1., 0.],
+        [-half, 0., TREE_BILLBOARD_SIZE, 0., 0., 1., 1., 1., 1., 2., 0., 1., 0.],
+    ], np.float32)
+    indices = np.array([0, 1, 2, 0, 2, 3], np.uint32)
+    return vertices, indices
+
+
 def tree_lod_levels(scales, *, pixel_scale=None, distances=None, texel=None):
     """Projected height selects detail in either the scene or a light-space map.
 
-    Returns 0=high, 1=medium, 2=low.
+    Returns 0=high, 1=medium, 2=low geometry, 3=2D impostor.  Shadow-map callers
+    clamp 3 back to 2: a camera-facing card is not a useful caster.
     """
     heights = np.asarray(scales) * TREE_HEIGHT
     pixels = heights / max(float(texel), 1e-6) if texel is not None else heights * pixel_scale / np.maximum(distances, 1.)
     return np.where(pixels > TREE_LOD_PIXELS[0], 0,
-                    np.where(pixels > TREE_LOD_PIXELS[1], 1, 2))
+                    np.where(pixels > TREE_LOD_PIXELS[1], 1,
+                             np.where(pixels > TREE_BILLBOARD_PIXELS, 2, 3)))

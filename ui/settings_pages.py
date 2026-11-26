@@ -206,9 +206,16 @@ def build(app):
         Section("Lens", [
             toggle("flare", "Lens flare", lambda: bool(r().flare_enabled), set_attr(r, "flare_enabled"),
                    "Starbursts and ghosts around the brightest lights (N)."),
+            slider("star_flare", "Star flare", lambda: float(r().flare_star_gain), set_attr(r, "flare_star_gain"),
+                   0.0, 2.0, 0.05, lambda v: "Off" if v <= 0.001 else pct(float(v) / 2.0),
+                   "Strength of the diffraction starburst spikes on every bright light.",
+                   enabled=flare_on),
             choice("flare_f", "Aperture", lambda: 14.0 if r().flare_fstop < 18.0 else 22.0, set_flare_aperture,
                    ((14.0, "f/14"), (22.0, "f/22")), "A narrower aperture draws longer, crisper spikes.",
                    enabled=flare_on),
+            slider("sun_flare", "Sun flare", lambda: float(r().sun_flare), set_attr(r, "sun_flare"),
+                   0.0, 2.0, 0.05, lambda v: "Off" if v <= 0.001 else pct(float(v) / 2.0),
+                   "Cinematic disc, chromatic halo, aperture ghosts and anamorphic streak around the sun."),
             slider("motion_blur", "Motion blur", lambda: float(r().motion_blur), set_attr(r, "motion_blur"),
                    0.0, 1.5, 0.05, times, "Smears fast camera and car movement. 0 turns it off."),
         ]),
@@ -245,7 +252,8 @@ def build(app):
     world = Category("world", "World", "clock", "Time of day, weather and sky", [
         Section("Time", [
             slider("time_of_day", "Time of day", lambda: float(app.sky_clock.hours), set_time, 0.0, 24.0, 0.25,
-                   clock_text, "Local mean solar time (K / L step by half an hour).", persist=False),
+                   clock_text, "Local mean solar time (K / L step by half an hour). While live weather is on, "
+                   "this follows the real local time at the place on screen.", persist=False),
             choice("time_flow", "Time flow", flow_get, flow_set, tuple((k, n) for k, n, _ in FLOW),
                    "How fast the day passes (P pauses)."),
         ]),
@@ -253,6 +261,10 @@ def build(app):
             choice("weather", "Weather", lambda: app.weather.mode, lambda v: app.weather.set_mode(v),
                    tuple((m, WEATHER_SHORT[m]) for m in WeatherSystem.MODES), "Changes the sky, fog and roads (T).",
                    persist=False),
+            toggle("live_weather", "Live weather", lambda: bool(app.weather.live),
+                   lambda v: app.set_live_weather(v),
+                   "Follow the real conditions reported for this place: cloud, rain, snow, "
+                   "wind, visibility and temperature (Shift+T).", persist=False),
             slider("light_pollution", "Light pollution", lambda: float(app.light_pollution),
                    set_attr(lambda: app, "light_pollution"), 0.0, 1.0, 0.05, pct,
                    "Night-sky glow: 0% shows the faintest stars, 100% is a bright city."),

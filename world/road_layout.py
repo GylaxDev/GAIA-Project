@@ -28,7 +28,14 @@ def _width_hint(road):
         width = float(getattr(road, 'width', 0.))
     except (TypeError, ValueError):
         width = 0.
-    return width if math.isfinite(width) and width > 0. else float(ROAD_WIDTHS.get(road.highway, 6.))
+    if math.isfinite(width) and width > 0.:
+        return width
+    # Named promenades are mapped as ordinary pedestrian ways without a width.
+    # The Mid Beach Boardwalk is a ~6 m promenade, not a 2.5 m footpath.
+    name = str(getattr(road, 'name', '') or '').casefold()
+    if 'boardwalk' in name and road.highway in ('pedestrian', 'footway', 'path'):
+        return 5.5
+    return float(ROAD_WIDTHS.get(road.highway, 6.))
 
 
 def lane_counts(road):
@@ -77,10 +84,16 @@ def road_width(road):
 
 
 def road_surface_lift(highway, index=0, *, footpath=False):
-    """Shared ribbon/decor datum, including the millimetre overlap tie-break."""
-    if footpath: return .10
+    """Shared ribbon/decor datum, including the millimetre overlap tie-break.
+
+    Footways are cut out of every carriageway before they are meshed, so they
+    only need to clear the terrain and the exact land-cover overlay.  They sit
+    on the shared road datum; the old 0.10 m lift left promenades such as the
+    Mid Beach Boardwalk floating on a tall black kerb above the sand.
+    """
+    if footpath: return 0.
     rank = {'motorway': 5, 'trunk': 5, 'primary': 4, 'secondary': 3, 'tertiary': 2}.get(highway, 1)
-    return .012*rank + .004*((index*2654435761) % 97)/97.
+    return .006*rank + .002*((index*2654435761) % 97)/97.
 
 
 def lane_offsets(width, own, opposite=0):

@@ -259,25 +259,28 @@ class DotGlobe:
         dots(ui, cx + np.cos(ang) * (r + 3), cy + np.sin(ang) * (r + 3), 0.9, None, (1.0, 1.0, 1.0, 0.45 * dim))
 
 
+def soft_glow(ui, cx, cy, radius, t, dim=1.0):
+    """A large, very soft two-colour aurora — the Apple splash, without a blur pass.
+
+    Stacked translucent discs approximate a gaussian falloff; the hue drifts slowly
+    between blue and violet so the background is alive but never busy.
+    """
+    wobble = 0.035 * math.sin(t * 0.23)
+    layers = 26
+    for i in range(layers, 0, -1):
+        f = i / layers
+        rr = radius * (1.85 + wobble) * f
+        a = (0.016 + 0.020 * (1.0 - f)) * dim
+        ui.circle(cx, cy, rr, (0.06, 0.34, 1.0, a * 1.05))
+        ui.circle(cx + rr * 0.30, cy + rr * 0.18, rr * 0.80,
+                  (0.42, 0.20, 0.92, a * 0.55))
+        ui.circle(cx - rr * 0.26, cy - rr * 0.12, rr * 0.62,
+                  (0.05, 0.55, 0.62, a * 0.35))
+
+
 def dotted_rings(ui, cx, cy, radii, t, dim=1.0):
-    """Concentric rings of dots that break up and drift, like the DedSec splash."""
-    xs, ys, al = [], [], []
-    for k, r in enumerate(radii):
-        n = max(24, int(math.tau * r / 7.0))
-        th = np.linspace(0, math.tau, n, endpoint=False, dtype=np.float32)
-        th = th + t * 0.03 * (1 if k % 2 else -1)
-        noise = (np.sin(th * 3 + k * 1.7 + t * 0.25) * np.sin(th * 5 - k * 2.3 - t * 0.15)
-                 + 0.6 * np.sin(th * 11 + k))
-        keep = noise > (-0.35 + 0.12 * (k % 3))
-        rr = r * (1.0 + 0.012 * np.sin(th * 7 + t * 0.5 + k))
-        xs.append(cx + np.cos(th[keep]) * rr[keep])
-        ys.append(cy + np.sin(th[keep]) * rr[keep])
-        al.append(np.full(int(keep.sum()), (0.50 - 0.05 * k) * dim, np.float32))
-    if xs:
-        a = np.concatenate(al)
-        col = np.ones((len(a), 4), np.float32)
-        col[:, 3] = np.clip(a, 0.05, 1.0)
-        dots(ui, np.concatenate(xs), np.concatenate(ys), 0.95, None, col)
+    """Legacy hook kept for call sites: now a soft glow rather than dotted rings."""
+    soft_glow(ui, cx, cy, max(radii) * 0.62, t, dim)
 
 
 class Backdrop:
@@ -294,14 +297,14 @@ class Backdrop:
              view=None):
         """``globe`` = (cx, cy, radius) in pixels; default is centred."""
         prepare(ui)
-        ui.rect(0, 0, w, h, T.BLACK)
-        if grid:
-            dot_grid(ui, 0, 0, w, h, 28.0, (1.0, 1.0, 1.0, 0.10 * dim), 0.8)
+        ui.gradient(0, 0, w, h, (0.055, 0.072, 0.110, 1.0), (0.008, 0.010, 0.018, 1.0))
         if globe is None:
             globe = (w / 2, h * 0.46, min(w, h) * 0.27)
         cx, cy, r = globe
-        self.globe.use_tiles(tiles)
         if rings:
-            dotted_rings(ui, cx, cy, [r * f for f in (1.30, 1.62, 2.0, 2.45, 3.0)], t, dim)
+            soft_glow(ui, cx, cy, r, t, dim)
+        if grid:
+            dot_grid(ui, 0, 0, w, h, 34.0, (1.0, 1.0, 1.0, 0.05 * dim), 0.6)
+        self.globe.use_tiles(tiles)
         if show_globe:
             self.globe.draw(ui, cx, cy, r, t, dim, view=view)

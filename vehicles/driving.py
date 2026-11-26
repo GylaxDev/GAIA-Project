@@ -15,7 +15,7 @@ from .vehicle_instances import (VEHICLE_STRIDE, LENGTHS, WIDTHS, HEIGHTS, WHEELB
                                 WHEEL_RADII, MASSES, LAMPS, BRAKE, LEFT, RIGHT,
                                 SUSPENSION, VehicleFrame, normalize_instances)
 
-DRIVABLE_KINDS = (0, 1, 2, 5, 6, 8, 9)
+DRIVABLE_KINDS = (0, 1, 2, 5, 6, 7, 8)
 # Quarter-car suspension x4 under a sprung 3-DOF body.
 #   sprung body  : heave / pitch / roll integrated in the world (not slaved to the road)
 #   four wheels  : each an unsprung mass on a tyre spring, so a wheel can climb a kerb

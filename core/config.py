@@ -53,12 +53,12 @@ CITIES = [
 
 DEFAULT_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 ACCENT = (0.04, 0.52, 1.0, 1.0)      # Apple system blue
-MESH_CACHE_VERSION = 59  # v59: furniture on separately mapped pavements (sidewalk:both=separate)
+MESH_CACHE_VERSION = 72  # v71: Times Square panels rebuilt without overlaps (invalidates v70)
 
 # Terrain elevation (AWS open terrain tiles, terrarium encoding, no key needed).
 TERRAIN_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
 TERRAIN_ZOOM = 13
-TERRAIN_GRID = 97          # samples across a chunk tile
+TERRAIN_GRID = 257         # samples across a chunk tile (native 256 px terrain tile + 1)
 ROAD_SURFACE = 0.06        # road surface lift above sampled terrain
 MOON_COLOR = (0.55, 0.65, 0.95)
 NEON_EXPOSURE_STOPS = 0.0  # optional trim on the calibrated cd/m² values in photometry.py

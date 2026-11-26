@@ -1,0 +1,84 @@
+{
+  "version": 2,
+  "source": "V8 Engine Startup and Revving  HQ Sound Effects - Everyday Cinematic Sounds.mp3",
+  "sample_rate": 44100,
+  "layers": [
+    {
+      "name": "idle",
+      "file": "v8_idle.wav",
+      "cycles": 34,
+      "rpm": 804.4998,
+      "source": "V8 Engine Startup and Revving  HQ Sound Effects - Everyday Cinematic Sounds.mp3",
+      "source_ranges": [
+        [
+          35.1,
+          40.25,
+          800.0
+        ]
+      ]
+    },
+    {
+      "name": "low",
+      "file": "v8_low.wav",
+      "cycles": 31,
+      "rpm": 1108.5044,
+      "source": "V8 Engine Startup and Revving  HQ Sound Effects - Everyday Cinematic Sounds.mp3",
+      "source_ranges": [
+        [
+          9.35,
+          12.85,
+          1100.0
+        ]
+      ]
+    },
+    {
+      "name": "rev",
+      "file": "v8_rev.wav",
+      "cycles": 14,
+      "rpm": 1707.0968,
+      "source": "V8 Engine Startup and Revving  HQ Sound Effects - Everyday Cinematic Sounds.mp3",
+      "source_ranges": [
+        [
+          15.67,
+          16.18,
+          1800.0
+        ],
+        [
+          16.6,
+          17.12,
+          1875.0
+        ],
+        [
+          22.55,
+          22.93,
+          1710.0
+        ]
+      ]
+    },
+    {
+      "name": "steady",
+      "file": "engine_steady.wav",
+      "cycles": 44,
+      "rpm": 2636.7713,
+      "source": "freesound_community-engine-47745.mp3",
+      "source_ranges": [
+        [
+          0.15,
+          2.2,
+          2640.0
+        ]
+      ]
+    }
+  ],
+  "sources": [
+    "V8 Engine Startup and Revving  HQ Sound Effects - Everyday Cinematic Sounds.mp3",
+    "car startup.mp3",
+    "freesound_community-engine-47745.mp3"
+  ],
+  "startup": "car_startup.wav",
+  "startup_source": "car startup.mp3",
+  "startup_range": [
+    0.065,
+    1.8142
+  ]
+}

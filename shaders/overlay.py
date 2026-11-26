@@ -15,6 +15,24 @@ void main() {
 }
 """
 
+OVERLAY_BLUR_FS = """
+#version 330 core
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform vec2 uDir;      // one half-res texel step (scaled) in texture units
+uniform vec2 uScale;    // source uv extent (captured region may be smaller than the texture)
+uniform float uFlip;    // 1 on the first pass: the framebuffer copy is stored bottom-up
+out vec4 FragColor;
+
+void main() {
+    vec2 uv = vec2(vUV.x, uFlip > 0.5 ? 1.0 - vUV.y : vUV.y) * uScale;
+    vec3 c = texture(uTex, uv).rgb * 0.2270270270;
+    c += (texture(uTex, uv + uDir).rgb + texture(uTex, uv - uDir).rgb) * 0.3162162162;
+    c += (texture(uTex, uv + uDir * 2.3846).rgb + texture(uTex, uv - uDir * 2.3846).rgb) * 0.0702702703;
+    FragColor = vec4(c, 1.0);
+}
+"""
+
 OVERLAY_FS = """
 #version 330 core
 in vec2 vUV;
@@ -33,6 +51,7 @@ uniform float uSoft;        // shadow blur radius
 uniform float uInvert;      // tiles: 0 = plain OSM, 1 = Apple-Maps dark style
 uniform vec4 uClip;         // clip centre (xy) and size (zw) for coloured triangles
 uniform float uClipRad;     // corner radius of the clip box
+uniform vec4 uUV;           // sub-rectangle of the texture drawn by mode 9 (u0, v0, u1, v1)
 uniform sampler2D uTex;
 out vec4 FragColor;
 
@@ -103,6 +122,33 @@ void main() {
         vec2 uv = clamp(vUV / uHalf * 0.5 + 0.5, 0.0, 1.0);
         vec4 t = texture(uTex, uv);
         FragColor = vec4(t.rgb, t.a * uColor.a * cov);
+        return;
+    }
+    if (uMode == 9) {
+        // A rounded sub-rectangle of the frame's backdrop copy, blurred here while
+        // the panel is drawn.  Blurring inline keeps the GPU from chaining the
+        // framebuffer copy into render-target passes every frame.
+        float d = sdBox(vUV, uHalf, uRad);
+        float px = max(fwidth(d), 1e-4);
+        float cov = clamp(0.5 - d / px, 0.0, 1.0);
+        if (cov <= 0.002) discard;
+        vec2 t01 = clamp(vUV / uHalf * 0.5 + 0.5, 0.0, 1.0);
+        vec2 uv = mix(uUV.xy, uUV.zw, t01);
+        // One gaussian step per device pixel, so the frost reads the same at any
+        // UI scale; uSoft is the blur radius in device pixels.
+        vec2 span = uUV.zw - uUV.xy;
+        vec2 blur = span * fwidth(t01) * uSoft;    // one blur radius, in per-pixel uv steps
+        vec2 dx = vec2(blur.x, 0.0);
+        vec2 dy = vec2(0.0, blur.y);
+        // Weights sum to 1: a 13-tap cross with corners, a two-axis gaussian.
+        vec3 c = texture(uTex, uv).rgb * 0.20;
+        c += (texture(uTex, uv + dx).rgb + texture(uTex, uv - dx).rgb
+              + texture(uTex, uv + dy).rgb + texture(uTex, uv - dy).rgb) * 0.12;
+        c += (texture(uTex, uv + dx * 2.0).rgb + texture(uTex, uv - dx * 2.0).rgb
+              + texture(uTex, uv + dy * 2.0).rgb + texture(uTex, uv - dy * 2.0).rgb) * 0.05;
+        c += (texture(uTex, uv + dx + dy).rgb + texture(uTex, uv + dx - dy).rgb
+              + texture(uTex, uv - dx + dy).rgb + texture(uTex, uv - dx - dy).rgb) * 0.03;
+        FragColor = vec4(c, uColor.a * cov);
         return;
     }
     if (uMode == 8) {

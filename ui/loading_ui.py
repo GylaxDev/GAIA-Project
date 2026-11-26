@@ -12,15 +12,15 @@ import random
 
 from . import theme as T
 from .backdrop import Backdrop
-from .ui_kit import (activity, alpha, caps, caps_w, check_circle, divider, ease_out_expo, frame, hsv, keycaps,
-                     logo_mark, mix, progress, prompt_bar)
+from .ui_kit import (activity, alpha, caps, caps_w, check_circle, divider, ease_out_expo, frame, glass, hsv,
+                     keycaps, logo_mark, mix, progress, prompt_bar)
 
 APP_NAME = "Project GAIA"
 TAGLINE = "Explore the living Earth"
 
 TIPS = (
     "Press Tab to open the Garage and call any car to the road beside you.",
-    "Hold Q while on foot to profile the people around you.",
+    "Press U to step out and walk the streets on foot.",
     "Press T to cycle the weather and K / L to move the time of day.",
     "Press Esc at any time for the menu: settings, travel and the Garage.",
     "Walk up to any parked car and press Enter to get in. Enter again to park.",
@@ -49,14 +49,14 @@ class LoadingScreen:
         e = ease_out_expo(t / 0.6)
         cx, ty = w / 2, h * 0.38 + r * 1.28
         caps(ui, APP_NAME, cx, ty + (1 - e) * 10, 34, alpha(T.TEXT_PRIMARY, e), "bold", anchor="center", track=0.18)
-        caps(ui, "// " + TAGLINE, cx, ty + 48, T.T_CAPTION_2 + 1, alpha(T.WD_GREEN, e), "medium", anchor="center")
+        caps(ui, TAGLINE, cx, ty + 48, T.T_CAPTION_2 + 1, alpha(T.TEXT_SECONDARY, e), "medium", anchor="center")
 
         bw = min(360.0, w - 80)
         bx, by = cx - bw / 2, ty + 84
         self.shown += (frac - self.shown) * 0.18
-        progress(ui, bx, by, bw, 4, self.shown, T.TEXT_PRIMARY, shimmer=(t * 0.7) % 1.0)
+        progress(ui, bx, by, bw, 4, self.shown, T.SYS_BLUE, shimmer=(t * 0.7) % 1.0)
         caps(ui, label, bx, by + 12, T.T_CAPTION_1, T.TEXT_SECONDARY, "medium")
-        caps(ui, f"{int(self.shown * 100)} %", bx + bw, by + 12, T.T_CAPTION_1, T.WD_GREEN, "medium", anchor="right")
+        caps(ui, f"{int(self.shown * 100)} %", bx + bw, by + 12, T.T_CAPTION_1, T.SYS_BLUE, "medium", anchor="right")
         prompt_bar(ui, w, h, ())
 
     def draw_travel(self, ui, w, h, t, *, title, coords, elapsed, frac, steps, detail="", hint=None,
@@ -73,7 +73,7 @@ class LoadingScreen:
         e = ease_out_expo(t / 0.5)
         x -= (1 - e) * 24
 
-        caps(ui, "// Travelling to", x, y, T.T_CAPTION_2 + 1, T.WD_GREEN, "medium")
+        caps(ui, "Travelling to", x, y, T.T_CAPTION_2 + 1, T.SYS_BLUE, "medium")
         size = 44 if caps_w(ui, title, 44, "bold", 0.06) <= pw else 30
         caps(ui, title, x, y + 24, size, T.TEXT_PRIMARY, "bold", track=0.06)
         ui.text(coords, x, y + 24 + size + 12, T.T_BODY, T.TEXT_TERTIARY)
@@ -82,8 +82,8 @@ class LoadingScreen:
         by = y + 24 + size + 58
 
         bar_w = pw - 70
-        progress(ui, x, by, bar_w, 4, self.shown, T.TEXT_PRIMARY, shimmer=(t * 0.6) % 1.0)
-        caps(ui, f"{int(self.shown * 100)} %", x + pw, by - 4, T.T_SUBHEAD, T.WD_GREEN, "bold", anchor="right")
+        progress(ui, x, by, bar_w, 4, self.shown, T.SYS_BLUE, shimmer=(t * 0.6) % 1.0)
+        caps(ui, f"{int(self.shown * 100)} %", x + pw, by - 4, T.T_SUBHEAD, T.SYS_BLUE, "bold", anchor="right")
         caps(ui, f"{int(elapsed)} s elapsed", x, by + 12, T.T_CAPTION_1, T.TEXT_TERTIARY, "medium")
 
         sy = by + 48
@@ -91,7 +91,7 @@ class LoadingScreen:
         for i, (label, state) in enumerate(steps):
             cy = sy + i * row + row / 2
             if state == "done":
-                check_circle(ui, x + 10, cy, 8.5, T.OK_GREEN)
+                check_circle(ui, x + 10, cy, 8.5, T.SYS_BLUE)
                 col, wt = T.TEXT_SECONDARY, "regular"
             elif state == "active":
                 activity(ui, x + 10, cy, 8, t, T.TEXT_PRIMARY)
@@ -101,8 +101,9 @@ class LoadingScreen:
                 col, wt = T.TEXT_QUATERNARY, "regular"
             ui.text_c(label, x + 34, cy, T.T_SUBHEAD, col, weight=wt)
             if state == "active" and detail:
-                ui.text_c(ui.fit(detail, T.T_CAPTION_2, pw * 0.45), x + pw, cy, T.T_CAPTION_2, T.WD_GREEN,
-                          anchor="right", weight="medium")
+                lw = ui.text_w(label, T.T_SUBHEAD, weight=wt)
+                ui.text_c(ui.fit(detail, T.T_CAPTION_2, pw * 0.45), x + 34 + lw + 14, cy, T.T_CAPTION_2,
+                          T.TEXT_SECONDARY, weight="medium")
 
         ly = sy + len(steps) * row + 10
         if hint:
@@ -121,9 +122,9 @@ class LoadingScreen:
         tip = TIPS[int(elapsed // 7 + self._tip0) % len(TIPS)]
         tip_w = min(pw + 60, w - 2 * x)
         ty = h - T.HINT_BAR_H - 84
-        ui.rect(x, ty, tip_w, 52, T.PANEL_BG)
+        glass(ui, x, ty, tip_w, 52, T.R_CARD)
         frame(ui, x, ty, tip_w, 52)
-        caps(ui, "Tip", x + 18, ty + 26, T.T_CAPTION_2, T.WD_GREEN, "bold", vcenter=True)
+        caps(ui, "Tip", x + 18, ty + 26, T.T_CAPTION_2, T.TEXT_TERTIARY, "semibold", vcenter=True)
         ui.text_c(ui.fit(tip, T.T_BODY, tip_w - 90), x + 62, ty + 26, T.T_BODY, T.TEXT_SECONDARY)
 
         items = ([("Esc", "Cancel")] if cancel else []) + [("F2", "Full log")]

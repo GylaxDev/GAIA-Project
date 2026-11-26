@@ -24,8 +24,9 @@ from . import ui_kit
 from ..core.config import CITIES
 from .loading_ui import APP_NAME, TAGLINE
 from .backdrop import Backdrop
-from .ui_kit import (alpha, bar, button, caps, caps_w, card, chip, close_button, divider, dot_grid, ease_out_cubic,
-                     ease_out_expo, focus_ring, frame, glass, group, heading, icon_tile, inside, keycaps, logo_mark,
+from .ui_kit import (alpha, bar, button, caps, caps_w, card, chip, close_button, divider, dot_grid, ease_bezier,
+                     ease_out_cubic, ease_out_expo, focus_ring, frame, glass, group, heading, icon_tile, inside,
+                     keycaps, logo_mark,
                      material_box, mix, panel_header, paragraph, prompt_bar, scrim, scrollbar, separator, sheet,
                      spring, surface)
 
@@ -122,27 +123,28 @@ class ConfirmDialog:
         self.rects = {}
 
     def draw(self, ui, w, h, mouse):
-        ui.rect(0, 0, w, h, (0.0, 0.0, 0.0, 0.72))
-        pw = min(420, w - 48)
-        lines = ui_kit.wrap(ui, self.message, T.T_BODY, pw - 56, "regular", 3)
-        lead = 20
-        ph = 30 + 26 + 14 + len(lines) * lead + 26 + 40 + 26
+        ui.rect(0, 0, w, h, (0.0, 0.0, 0.0, 0.55))
+        pw = min(400, w - 48)
+        lines = ui_kit.wrap(ui, self.message, T.T_BODY, pw - 64, "regular", 3)
+        lead = 21
+        ph = 34 + 30 + 12 + len(lines) * lead + 28 + 44 + 26
         x, y = (w - pw) / 2, (h - ph) / 2 - 20
 
-        ui.rect(x, y, pw, ph, T.PANEL_BG)
-        frame(ui, x, y, pw, ph, T.LINE, title=self.title)
-        paragraph(ui, self.message, x + 28, y + 34, pw - 56, T.T_BODY, T.TEXT_SECONDARY, lead=lead, max_lines=3)
+        ui.box(x, y, pw, ph, T.R_POPUP, None, None, shadow=54.0, shadow_dy=20.0, shadow_alpha=0.5)
+        glass(ui, x, y, pw, ph, T.R_POPUP, "raised")
+        ui.text(self.title, x + 32, y + 26, T.T_TITLE_2, T.TEXT_PRIMARY, weight="semibold")
+        paragraph(ui, self.message, x + 32, y + 60, pw - 64, T.T_BODY, T.TEXT_SECONDARY, lead=lead, max_lines=3)
 
-        gap, bh = 10, 38
-        bw = (pw - 56 - gap) / 2
-        by = y + ph - 26 - bh
-        no_r = (x + 28, by, bw, bh)
-        yes_r = (x + 28 + bw + gap, by, bw, bh)
+        gap, bh = 12, 44
+        bw = (pw - 64 - gap) / 2
+        by = y + ph - 30 - bh
+        no_r = (x + 32, by, bw, bh)
+        yes_r = (x + 32 + bw + gap, by, bw, bh)
         self.rects = {"no": no_r, "yes": yes_r}
 
         button(ui, no_r, self.no, mouse, key="cf_no", kind="secondary", focus=self.focus == 1)
         button(ui, yes_r, self.yes, mouse, key="cf_yes",
-               kind="destructive" if self.danger else "primary", focus=self.focus == 0)
+               kind="primary" if not self.danger else "destructive", focus=self.focus == 0)
 
     def key(self, ev, pg, menu):
         k = ev.key
@@ -279,7 +281,7 @@ class MenuSystem:
         ui_kit.CHROME["version"] = f"v{ver}" if ver else ""
         ui_kit.CHROME["user"] = info.get("user") or "guest"
 
-        fade = ease_out_expo(self.t / 0.22)
+        fade = ease_bezier(min(1.0, self.t / 0.34), T.EASE_EMPHASIZED)
         opaque = (not info.get("world")) or self.title        # nothing to show behind us: the dot globe
         tiles = self._tiles()
         r = min(w, h) * 0.27
@@ -291,8 +293,7 @@ class MenuSystem:
                                show_globe=self.page != "travel")
         else:
             scrim(ui, w, h, fade, flat=True)
-            dot_grid(ui, 0, 0, w, h, 28.0, (1.0, 1.0, 1.0, 0.10), 0.8)
-        self._user_line(ui, info)
+            dot_grid(ui, 0, 0, w, h, 36.0, (1.0, 1.0, 1.0, 0.05), 0.6)
         page.draw(ui, w, h, mouse)
         prompt_bar(ui, w, h, page.prompts())
 
@@ -410,34 +411,37 @@ class MainPage(Page):
     def draw(self, ui, w, h, mouse):
         host, menu = self.menu.host, self.menu
         info = host.menu_info()
-        wide = w >= 880
-        x = 56.0 if wide else 28.0
+        wide = w >= 900
+        x = 64.0 if wide else 28.0
 
         # Wordmark
-        bob = 0.0
-        logo_mark(ui, x, 62, 46.0)
-        caps(ui, APP_NAME, x + 62, 66, 26, T.TEXT_PRIMARY, "bold", track=0.16)
-        sub_w = ui.text("// " + self._greeting(info), x + 62, 96, T.T_BODY - 1, T.WD_GREEN, weight="medium")
+        logo_mark(ui, x, 64, 52.0)
+        ui.text(APP_NAME, x + 68, 68, 27, T.TEXT_PRIMARY, weight="semibold")
+        sub_w = ui.text(self._greeting(info), x + 68, 102, T.T_CALLOUT, T.TEXT_TERTIARY,
+                        weight="regular")
         if menu.title is False:
-            chip(ui, x + 62 + sub_w + 14, 95, "Paused", T.WD_AMBER, T.T_CAPTION_1, h=20, pad=8)
+            chip(ui, x + 68 + sub_w + 12, 99, "Paused", T.SYS_ORANGE, T.T_CAPTION_2, h=24, pad=10)
 
-        # Menu: left-aligned bars, as wide as their text; the selected one is wider and blue
         items = self._items()
-        bar_h, pitch = 34.0, 46.0
-        pitch = min(pitch, (h - T.HINT_BAR_H - 150 - 170) / max(1, len(items)))
-        bottom = h - T.HINT_BAR_H - 26
-        y0 = bottom - len(items) * pitch + (pitch - bar_h)
+        row_h = 46.0
+        card_w = min(360.0, w - 2 * x)
+        card_h = len(items) * row_h + 12
+        bottom = h - T.HINT_BAR_H - 34
+        y0 = min(bottom - card_h, max(168.0, h * 0.24))
+        slide = (1.0 - ease_out_expo(menu.t / 0.32)) * 18.0
+        cx, cy = x + slide, y0
+        glass(ui, cx, cy, card_w, card_h, T.R_CARD + 4, "menu")
         for i, (ident, label, desc, icon, enabled, note) in enumerate(items):
-            tw = ui.text_w(label, T.T_SUBHEAD, weight="medium")
-            slide = (1.0 - ease_out_expo((menu.t - 0.04 * i) / 0.30)) * -60.0
-            base_w = max(168.0, tw + 40)
-            ry = y0 + i * pitch
-            r = (x + slide, ry, base_w, bar_h)
-            if enabled:
-                self.hits.add((x, ry, base_w + 26, bar_h), "item", i)
-            hov = spring(ui, ("main", i), float(inside((x, ry, base_w + 26, bar_h), *mouse) and enabled), T.SPRING_GENTLE)
-            lit = (self.focus == i and enabled) or hov > 0.5
-            self._draw_item(ui, r, label, enabled, note, lit, tw)
+            ry = cy + 6 + i * row_h
+            row = (cx + 6, ry, card_w - 12, row_h - 4)
+            hov = spring(ui, ("main", i), float(inside(row, *mouse) and enabled), T.SPRING_GENTLE)
+            lit = (self.focus == i and enabled)
+            if hov > 0.01:
+                ui.box(*row, T.R_5, (1.0, 1.0, 1.0, 0.09 * hov))
+            if lit:
+                ui.box(*row, T.R_5, T.SYS_BLUE, (1.0, 1.0, 1.0, 0.14))
+            self.hits.add(row, "item", i)
+            self._draw_item(ui, row, label, enabled, note, lit, desc)
 
         if wide:
             self._draw_session(ui, w, h, info)
@@ -455,51 +459,60 @@ class MainPage(Page):
                 else "Good evening" if 18 <= hour < 23 else "Still up")
         return f"{part}, explorer"
 
-    def _draw_item(self, ui, r, label, enabled, note, lit, tw):
+    def _draw_item(self, ui, r, label, enabled, note, lit, desc):
         x, y, w, h = r
-        if lit:
-            w += 26
-            ui.rect(x, y, w, h, T.BAR_SELECTED)
-        else:
-            ui.rect(x, y, w, h, T.BAR if enabled else (0.05, 0.05, 0.05, 1.0))
-        col = T.TEXT_PRIMARY if enabled else T.TEXT_QUATERNARY
-        ui.text_c(label, x + (36 if lit else 20), y + h / 2, T.T_SUBHEAD, col, weight="medium")
+        col = (1.0, 1.0, 1.0, 0.96) if enabled else T.TEXT_QUATERNARY
+        # A small chevron, like a Settings row that pushes a page.
+        cy = y + h / 2
+        ch = (1.0, 1.0, 1.0, 0.45 if enabled else 0.16)
+        ui.line(x + w - 26, cy - 5, x + w - 21, cy, 1.8, ch)
+        ui.line(x + w - 21, cy, x + w - 26, cy + 5, 1.8, ch)
+        ui.text_c(label, x + 20, cy, T.T_SUBHEAD, col, weight="medium")
         if note and not enabled:
-            ui.text_c(note, x + w + 12, y + h / 2, T.T_CAPTION_2, T.WD_AMBER, weight="medium")
+            nw = ui.text_w(note, T.T_CAPTION_2, weight="medium")
+            ui.text_c(note, x + w - 38 - nw, cy, T.T_CAPTION_2, T.SYS_ORANGE, weight="medium")
+        elif desc:
+            dw = ui.text_w(desc, T.T_CAPTION_2, weight="regular")
+            if x + w - 38 - dw > x + 20 + ui.text_w(label, T.T_SUBHEAD, weight="medium") + 18:
+                ui.text_c(desc, x + w - 38, cy, T.T_CAPTION_2,
+                          (1.0, 1.0, 1.0, 0.82) if lit else T.TEXT_TERTIARY, anchor="right")
 
     def _draw_session(self, ui, w, h, info):
-        pw = 330.0
-        x, y = w - 56 - pw, 70.0
+        pw = 340.0
+        x, y = w - 64 - pw, 76.0
         rows = [("Location", info.get("location")), ("Coordinates", info.get("coords")),
                 ("Local time", info.get("time")), ("Weather", info.get("weather")),
                 ("Mode", info.get("mode")), ("Vehicle", info.get("vehicle"))]
         rows = [(k, v) for k, v in rows if v and v != "–"]
-        rh = 32
-        ph = 30 + max(1, len(rows)) * rh + 12
-        ui.rect(x, y, pw, ph, T.PANEL_BG)
-        frame(ui, x, y, pw, ph, T.LINE, title="Current session")
+        rh = 34
+        ph = 58 + max(1, len(rows)) * rh + 10
+        glass(ui, x, y, pw, ph, T.R_CARD + 4, "menu")
+        ui.text("Current session", x + 22, y + 20, T.T_CALLOUT, T.TEXT_PRIMARY, weight="semibold")
         if not rows:
-            ui.text("No city loaded yet.", x + 20, y + 34, T.T_BODY, T.TEXT_SECONDARY)
-            ui.text("Open the world map or pick a", x + 20, y + 58, T.T_CAPTION_2 + 1, T.TEXT_TERTIARY)
-            ui.text("destination to start exploring.", x + 20, y + 76, T.T_CAPTION_2 + 1, T.TEXT_TERTIARY)
+            ui.text("No city loaded yet", x + 22, y + 50, T.T_BODY, T.TEXT_SECONDARY)
+            ui.text("Open the world map or pick a destination", x + 22, y + 74,
+                    T.T_FOOTNOTE, T.TEXT_TERTIARY)
             return
+        ui.rect(x + 22, y + 46, pw - 44, 1.0 / ui.scale, T.SEPARATOR)
         for i, (k, v) in enumerate(rows):
-            ry = y + 26 + i * rh
-            caps(ui, k, x + 20, ry + rh / 2, T.T_CAPTION_1, T.TEXT_TERTIARY, "medium", vcenter=True)
-            ui.text_c(ui.fit(str(v), T.T_BODY, pw - 150), x + pw - 20, ry + rh / 2, T.T_BODY, T.WD_GREEN,
-                      anchor="right", weight="medium")
+            ry = y + 50 + i * rh
+            ui.text_c(k, x + 22, ry + rh / 2, T.T_BODY, T.TEXT_SECONDARY)
+            ui.text_c(ui.fit(str(v), T.T_BODY, pw - 170), x + pw - 22, ry + rh / 2, T.T_BODY,
+                      T.TEXT_PRIMARY, anchor="right", weight="medium")
+            if i < len(rows) - 1:
+                ui.rect(x + 22, ry + rh - 1, pw - 44, 1.0 / ui.scale, T.SEPARATOR)
 
     def _draw_hint_panel(self, ui, w, h, item):
         ident, label, desc, icon, enabled, note = item
-        pw, ph = 420.0, 108.0
-        x, y = w - 56 - pw, h - T.HINT_BAR_H - 26 - ph
-        ui.rect(x, y, pw, ph, T.PANEL_BG)
-        caps(ui, label, x + 20, y + 18, T.T_SUBHEAD, T.TEXT_PRIMARY, "bold")
-        paragraph(ui, note if (note and not enabled) else desc, x + 20, y + 48, pw - 40, T.T_BODY - 1,
-                  T.TEXT_SECONDARY, lead=19, max_lines=2)
+        pw, ph = 420.0, 116.0
+        x, y = w - 64 - pw, h - T.HINT_BAR_H - 34 - ph
+        glass(ui, x, y, pw, ph, T.R_CARD + 4, "menu")
+        ui.text(label, x + 22, y + 20, T.T_SUBHEAD, T.TEXT_PRIMARY, weight="semibold")
+        paragraph(ui, note if (note and not enabled) else desc, x + 22, y + 48, pw - 44, T.T_BODY,
+                  T.TEXT_SECONDARY, lead=20, max_lines=2)
         if enabled:
-            keycaps(ui, x + 20, y + ph - 34, "Enter", 11)
-            caps(ui, "Access", x + 20 + 60, y + ph - 23.5, T.T_CAPTION_2 + 1, T.TEXT_PRIMARY, "bold", vcenter=True)
+            keycaps(ui, x + 22, y + ph - 38, "Enter", 11)
+            ui.text_c("Select", x + 22 + 58, y + ph - 27, T.T_FOOTNOTE, T.TEXT_PRIMARY, weight="semibold")
 
     # --------------------------------------------------------------- input
     def prompts(self):
@@ -588,9 +601,9 @@ class TravelPage(Page):
         self.view = None                 # (lat, lon) the globe is turning towards
 
     def _grid(self, w, h):
-        x = 56.0 if w >= 880 else 28.0
+        x = 64.0 if w >= 880 else 28.0
         bw = min(380.0, w - 2 * x)
-        top = 104.0
+        top = 138.0
         bar_h, pitch = 34.0, min(42.0, (h - T.HINT_BAR_H - top - 96) / max(1, len(CITIES)))
         rects = [(x, top + i * pitch, bw, bar_h) for i in range(len(CITIES))]
         return rects, top + len(CITIES) * pitch + 6, x, bw
@@ -599,7 +612,8 @@ class TravelPage(Page):
         rects, bottom, x, bw = self._grid(w, h)
         self.cols = 1
         menu = self.menu
-        caps(ui, "// Travel", x, 62, 22, T.TEXT_PRIMARY, "bold", track=0.16)
+        ui.text("Travel", x, 58, 30, T.TEXT_PRIMARY, weight="semibold")
+        ui.text("Choose a city or open the world map", x, 96, T.T_CALLOUT, T.TEXT_TERTIARY)
 
         # The globe turns to the highlighted city
         cur = CITIES[self.focus] if 0 <= self.focus < len(CITIES) else None
@@ -615,30 +629,34 @@ class TravelPage(Page):
             gx, gy = w * 0.68, h * 0.46
             if getattr(menu, "backdrop", None) is not None and self.view is not None:
                 menu.backdrop.globe.draw(ui, gx, gy, r, menu.clock, view=self.view)
-            ui.rect(gx - 1, gy - 14, 2, 28, T.WD_GREEN)            # target reticle
-            ui.rect(gx - 14, gy - 1, 28, 2, T.WD_GREEN)
-            ui.ring(gx, gy, 9 + 3 * math.sin(menu.clock * 3.0), 1.5, T.WD_GREEN)
+            ui.rect(gx - 1, gy - 14, 2, 28, T.SYS_BLUE)            # target reticle
+            ui.rect(gx - 14, gy - 1, 28, 2, T.SYS_BLUE)
+            ui.ring(gx, gy, 9 + 3 * math.sin(menu.clock * 3.0), 1.5, T.SYS_BLUE)
             if cur is not None:
                 caps(ui, cur[0], gx, gy - r - 54, 24, T.TEXT_PRIMARY, "bold", anchor="center", track=0.12)
                 ui.text(f"{abs(cur[1]):.2f}°{'N' if cur[1] >= 0 else 'S'}   {abs(cur[2]):.2f}°{'E' if cur[2] >= 0 else 'W'}",
-                        gx, gy - r - 22, T.T_BODY, T.WD_GREEN, anchor="center", weight="medium")
+                        gx, gy - r - 22, T.T_BODY, T.TEXT_SECONDARY, anchor="center", weight="medium")
 
+        # One grouped card of city rows, inset and rounded like a Settings list.
+        card_r = (x, rects[0][1] - 8, bw,
+                  rects[-1][1] + rects[-1][3] + 6 - (rects[0][1] - 8))
+        glass(ui, *card_r, T.R_CARD + 4, "menu")
         for i, (name, lat, lon) in enumerate(CITIES):
-            r_ = rects[i]
+            r_ = (rects[i][0] + 6, rects[i][1], rects[i][2] - 12, rects[i][3] - 2)
             sel = self.focus == i
             hov = spring(ui, ("trv", i), float(inside(r_, *mouse)), T.SPRING_GENTLE)
             self.hits.add(r_, "city", i)
-            lit = sel or hov > 0.5
-            wdt = r_[2] if lit else max(168.0, ui.text_w(name, T.T_SUBHEAD, weight="medium") + 40)
-            ui.rect(r_[0], r_[1], wdt, r_[3], T.BAR_SELECTED if lit else T.BAR)
-            ui.text_c(name, r_[0] + (36 if lit else 20), r_[1] + r_[3] / 2, T.T_SUBHEAD, T.TEXT_PRIMARY, weight="medium")
+            if hov > 0.01:
+                ui.box(*r_, T.R_5, (1.0, 1.0, 1.0, 0.09 * hov))
+            if sel:
+                ui.box(*r_, T.R_5, T.SYS_BLUE, (1.0, 1.0, 1.0, 0.14))
+            ui.text_c(name, r_[0] + 18, r_[1] + r_[3] / 2, T.T_SUBHEAD, T.TEXT_PRIMARY, weight="medium")
             if i < 10:
-                keycaps(ui, r_[0] + wdt - 14 - 21 if lit else r_[0] + wdt + 10, r_[1] + (r_[3] - 21) / 2,
-                        str((i + 1) % 10), 11)
+                keycaps(ui, r_[0] + r_[2] - 40, r_[1] + (r_[3] - 22) / 2, str((i + 1) % 10), 11)
 
-        by = bottom + 8
-        b1 = (x, by, 190.0, 36.0)
-        b2 = (x + 202, by, 210.0, 36.0)
+        by = bottom + 10
+        b1 = (x, by, 186.0, 44.0)
+        b2 = (x + 198, by, 214.0, 44.0)
         self.hits.add(b1, "map")
         self.hits.add(b2, "search")
         button(ui, b1, "Open world map", mouse, key="trv_map", kind="secondary", icon="globe",

@@ -299,6 +299,58 @@ def classify_material(tags, kind, bid):
 
 _VALID_ROOFS = {"flat", "pyramidal", "hipped", "gabled", "dome", "skillion", "half-hipped"}
 
+# OSM hardly ever maps roof:shape, so every low house in a tile rendered as a
+# flat grey box while the same blocks are terracotta tile on the ground.  Small
+# standard residential footprints get a generated pitched roof instead.
+GENERATED_ROOF_KINDS = frozenset((
+    "house", "detached", "semidetached_house", "terrace", "bungalow", "cottage",
+    "cabin", "hut", "farmhouse", "farm", "villa", "residential", "yes",
+))
+GENERATED_ROOF_MAX_HEIGHT = 12.0    # about three storeys: above that it is a block
+GENERATED_ROOF_MIN_AREA = 16.0
+GENERATED_ROOF_MAX_AREA = 600.0     # bigger plans read as halls and stay flat
+GENERATED_ROOF_MIN_RATIO = 0.86     # matches the mesher's pitched-roof guard
+_TILE_ROOF_TONES = (
+    np.array([0.44, 0.20, 0.14], np.float32),   # terracotta
+    np.array([0.33, 0.16, 0.12], np.float32),   # weathered red-brown
+    np.array([0.30, 0.29, 0.27], np.float32),   # grey tile
+    np.array([0.40, 0.27, 0.19], np.float32),   # brown shingle
+)
+
+
+def generated_roof(kind, poly, height, bid, tags):
+    """(shape, tile tone) for a small low-rise plan OSM left flat, else None.
+
+    A narrow plan gets a gabled roof with the ridge along its length; a squarer
+    plan gets a hipped roof so every facade keeps its eaves.  Long slabs, wide
+    halls, towers and any explicitly tagged roof keep the flat cap.
+    """
+    if (tags.get("roof:shape") or "").strip().lower():
+        return None
+    if kind not in GENERATED_ROOF_KINDS or height > GENERATED_ROOF_MAX_HEIGHT:
+        return None
+    try:
+        area = float(poly.area)
+        if not (GENERATED_ROOF_MIN_AREA <= area <= GENERATED_ROOF_MAX_AREA):
+            return None
+        if len(poly.interiors):
+            return None
+        rect = poly.minimum_rotated_rectangle
+        if rect.is_empty or rect.geom_type != "Polygon" or rect.area < 1e-3:
+            return None
+        if area / rect.area < GENERATED_ROOF_MIN_RATIO:
+            return None
+        minx, miny, maxx, maxy = rect.bounds
+        short, long = sorted((maxx - minx, maxy - miny))
+        if short < 3.0 or short > 22.0 or long > short * 4.0:
+            return None
+    except Exception:
+        return None
+    shape = "gabled" if long >= short * 1.45 else "hipped"
+    tone = _TILE_ROOF_TONES[int(_jitter(bid + 991) * len(_TILE_ROOF_TONES))
+                            % len(_TILE_ROOF_TONES)]
+    return shape, tone
+
 
 def parse_roof_tags(tags):
     shape = (tags.get("roof:shape") or "flat").lower()
@@ -1298,12 +1350,20 @@ def parse_tile_elements(raw, proj, owner=None, default_height=9.0, level_height=
                 elif h < 0.60: c_tag = np.array([0.20, 0.25, 0.30])
                 elif h < 0.80: c_tag = np.array([0.60, 0.60, 0.65])
                 else:          c_tag = np.array([0.95, 0.95, 0.95])
+            roof_tagged = r_tag is not None
             if r_tag is None: r_tag = c_tag * 0.6
             roof_shape, roof_h, roof_angle, roof_dir = parse_roof_tags(tags)
             mat_kind = classify_material(tags, kind, eid)
             for i, poly in enumerate(polys):
                 if owner is not None and not owns_tile(poly, proj, *owner): continue
                 h, h0 = building_heights(tags, kind, eid + i, default_height, level_height)
+                roof_col = r_tag
+                gen = (generated_roof(kind, poly, h, eid + i, tags)
+                       if roof_shape == "flat" and not is_part else None)
+                if gen is not None:
+                    roof_shape, tile_tone = gen
+                    if not roof_tagged:
+                        roof_col = tile_tone
                 if roof_h <= 0.0 and roof_shape != "flat":
                     if roof_shape in ("pyramidal", "hipped", "gabled", "half-hipped"):
                         roof_h = max(2.5, min(12.0, h * 0.18))
@@ -1312,7 +1372,7 @@ def parse_tile_elements(raw, proj, owner=None, default_height=9.0, level_height=
                     elif roof_shape == "skillion":
                         roof_h = max(1.5, min(6.0, h * 0.08))
                 buildings.append(Building(
-                    eid * 16 + i, poly, h, h0, kind, c_tag, r_tag,
+                    eid * 16 + i, poly, h, h0, kind, c_tag, roof_col,
                     tags.get("building:material", ""), roof_shape=roof_shape,
                     roof_height=roof_h, roof_angle=roof_angle, roof_direction=roof_dir,
                     layer=1 if is_part else 0, material_kind=mat_kind,
@@ -1658,7 +1718,8 @@ class OSMDataFetcher:
 
     def __init__(self, cache_dir, default_height=9.0, level_height=3.2,
                  max_requests=3, min_interval=0.5, http_timeout=None,
-                 connect_timeout=None, hedge_delay=None, race=None):
+                 connect_timeout=None, hedge_delay=None, race=None,
+                 terrain_enabled: bool = False):
         self.cache_dir = Path(cache_dir)
         self.default_height = default_height
         self.level_height = level_height
@@ -1672,7 +1733,7 @@ class OSMDataFetcher:
         self._refreshed: set = set()
         self._rr = itertools.count()
         from .terrain import TerrainTiles
-        self.terrain = TerrainTiles(self.cache_dir)
+        self.terrain = TerrainTiles(self.cache_dir, enabled=terrain_enabled)
         self.terrain_datum = 0.0
 
     def close(self): self.http.close()

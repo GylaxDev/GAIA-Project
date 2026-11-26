@@ -25,7 +25,7 @@ def _smoothstep(a, b, x):
 @dataclass
 class WeatherState:
     label: str = "Clear"
-    cloud: float = 0.04
+    cloud: float = 0.16
     rain: float = 0.0
     snow: float = 0.0
     fog: float = 0.05
@@ -59,7 +59,7 @@ class WeatherSystem:
               "storm": "Thunderstorm", "snow": "Snow"}
     PRESETS = {
         # cloud, rain, snow, storm, wind-x, wind-y
-        "clear":    (0.04, 0.00, 0.00, 0.00, 0.8, 0.25),
+        "clear":    (0.16, 0.00, 0.00, 0.00, 0.8, 0.25),
         "overcast": (0.78, 0.00, 0.00, 0.05, 2.1, 0.65),
         "rain":     (0.92, 0.85, 0.00, 0.38, 3.8, 1.10),
         "storm":    (1.00, 1.00, 0.00, 1.00, 6.2, 2.10),
@@ -69,6 +69,10 @@ class WeatherSystem:
     def __init__(self, start="clear"):
         self.mode = start if start in self.PRESETS else "clear"
         self.cloud, self.rain, self.snow, self.storm, wx, wy = self.PRESETS[self.mode]
+        self.live = False            # True while following real reported conditions
+        self.live_fog = None         # fog target from the report, when live
+        self.custom_label = None     # "Partly cloudy · 24 °C" while live
+        self.live_state = None
         self.wetness = .55 if self.rain > .02 else 0.0
         self.fog = self._fog_target()
         self.time = 0.0
@@ -83,15 +87,50 @@ class WeatherSystem:
 
     @property
     def label(self):
-        return self.LABELS[self.mode]
+        return self.custom_label or self.LABELS[self.mode]
+
+    @property
+    def temperature(self):
+        state = self.live_state or {}
+        return state.get("temp_c")
 
     def set_mode(self, mode):
         if mode not in self.PRESETS:
             return
         if mode == "storm" and self.mode != mode:
             self._next_lightning = self.time + float(self._rng.uniform(9., 19.))
+        # A manual choice always leaves live mode, otherwise the next refresh
+        # would silently overwrite what the user just picked.
+        self.live, self.live_fog, self.custom_label, self.live_state = False, None, None, None
         self.mode = mode
         self._preset = self.PRESETS[mode]
+
+    def apply_live(self, state):
+        """Follow a real observation (see ``world.live_weather``).
+
+        Only the targets change; the existing transition rates blend into them, so
+        switching cities or refreshing the report never snaps the sky.
+        """
+        if not state:
+            return
+        kind = state.get("kind", "cloudy")
+        self.mode = ("storm" if kind == "storm" else
+                     "snow" if kind == "snow" else
+                     "rain" if kind in ("rain", "drizzle") else
+                     "overcast" if kind in ("overcast", "cloudy", "fog") else "clear")
+        wx, wy = state.get("wind", (0.0, 0.0))
+        self._preset = (float(state.get("cloud", 0.3)), float(state.get("rain", 0.0)),
+                        float(state.get("snow", 0.0)), float(state.get("storm", 0.0)),
+                        float(wx), float(wy))
+        self.live_fog = float(state.get("fog", 0.05))
+        temp = state.get("temp_c")
+        text = state.get("text") or self.LABELS[self.mode]
+        self.custom_label = f"{text}  \u00b7  {round(temp):d} \u00b0C" if temp is not None else text
+        self.live_state = dict(state)
+        self.live = True
+
+    def clear_live(self):
+        self.live, self.live_fog, self.custom_label, self.live_state = False, None, None, None
 
     def cycle(self):
         i = (self.MODES.index(self.mode) + 1) % len(self.MODES)
@@ -137,6 +176,8 @@ class WeatherSystem:
         return self.state
 
     def _fog_target(self):
+        if self.live and self.live_fog is not None:
+            return min(1., float(self.live_fog))
         return min(1., .04 + .22 * self.cloud + .44 * self.rain + .24 * self.storm + .22 * self.snow)
 
     def _snapshot(self):
@@ -150,12 +191,44 @@ class WeatherSystem:
             time=self.time, wind=self.wind, wind_offset=self.wind_offset, lightning=self.lightning,
         )
 
+    # Display-referred colour of the cloud deck seen from the street, at local noon, per weather
+    # type.  Reference: real overcast cities are bright, neutral and only slightly cool; rain
+    # darkens and cools the deck; a thunderstorm deck is dark slate with a blue-violet cast;
+    # snow clouds are the brightest and the most neutral.
+    DECK_OVERCAST = np.array([0.600, 0.628, 0.664], np.float32)
+    DECK_RAIN = np.array([0.440, 0.476, 0.528], np.float32)
+    DECK_STORM = np.array([0.235, 0.255, 0.330], np.float32)
+    DECK_SNOW = np.array([0.720, 0.748, 0.792], np.float32)
+    # Cloud base lit from below by the city: warm, neutral-grey sodium / LED sky-glow.
+    DECK_NIGHT = np.array([0.092, 0.080, 0.071], np.float32)
+
+    def deck_colour(self, sky, clear_fog):
+        """Colour of the overcast deck and the fog beneath it, for the current sun and weather."""
+        luma = np.array([0.2126, 0.7152, 0.0722], np.float32)
+        storm = float(np.clip(self.storm, 0., 1.))
+        rain = float(np.clip(self.rain, 0., 1.)) * (1. - storm)
+        snow = float(np.clip(self.snow, 0., 1.)) * (1. - storm)
+        plain = max(0., 1. - storm - rain - snow)
+        day_col = (self.DECK_OVERCAST * plain + self.DECK_RAIN * rain
+                   + self.DECK_STORM * storm + self.DECK_SNOW * snow)
+        # The deck is dimmer when the sun is low, and picks up a trace of its colour at the horizon.
+        alt = math.degrees(float(sky.alt))
+        elevation = _smoothstep(-4., 38., alt)
+        day_col = day_col * (0.42 + 0.58 * elevation)
+        low_sun = (1. - _smoothstep(1., 20., alt)) * _smoothstep(-6., 2., alt)
+        tint = np.asarray(clear_fog, np.float32) / max(float(np.asarray(clear_fog, np.float32) @ luma), 1e-4)
+        warm = (0.42 * low_sun) * (1. - 0.65 * storm)
+        day_col = day_col * (1. - warm + warm * tint)
+        night = float(sky.night)
+        glow = 0.55 + 0.45 * float(np.clip(sky.light_pollution / .35, 0., 1.))
+        night_col = self.DECK_NIGHT * glow * (1. - 0.30 * storm)
+        return (day_col * (1. - night) + night_col * night).astype(np.float32)
+
     def effective_sky(self, sky):
         """Shade surface lighting; leave sky gaps / Moon for directional cloud extinction."""
         cloud = float(np.clip(self.cloud, 0.0, 1.0))
         storm = float(np.clip(self.storm, 0.0, 1.0))
         night = float(sky.night)
-        day = 1.0 - night
         aerosol = float(np.clip(sky.aerosol_density * (1. + 1.8 * self.fog + .7 * storm), .1, 8.))
         exposure = float(sky.exposure * (1.0 + 0.06 * cloud))
         clear_fog = horizon_display(sky.sun_dir, sky.atmosphere_intensity, exposure,
@@ -163,21 +236,23 @@ class WeatherSystem:
                                    night=night, glow=sky.sky_glow)
 
         # Fog tint is display-referred; ambient illumination stays in scene light.
-        grey = (np.array([0.30, 0.34, 0.39], np.float32) * day
-                + np.array([0.022, 0.030, 0.047], np.float32) * night)
-        grey = grey * (1.0 - 0.28 * storm)
-        if self.snow > 0.05:
-            grey = grey * np.array([0.96, 0.99, 1.04], np.float32)
-        fog = clear_fog * (1.0 - 0.78 * cloud) + grey * (0.78 * cloud)
-        sky_col = clear_fog * (1.0 - 0.88 * cloud) + grey * (0.88 * cloud)
+        deck = self.deck_colour(sky, clear_fog)
+        # Cloud cover below ~15% leaves the clear horizon alone; a full deck replaces it entirely
+        # (the old blend always kept a yellow strip of clear-sky horizon under a storm).
+        deck_fog = 0.94 * _smoothstep(.12, .85, cloud)
+        deck_sky = 0.97 * _smoothstep(.08, .78, cloud)
+        fog = clear_fog * (1.0 - deck_fog) + deck * deck_fog
+        sky_col = clear_fog * (1.0 - deck_sky) + deck * deck_sky
         sky_luma = float(sky.amb @ np.array([0.2126, 0.7152, 0.0722]))
-        amb = sky.amb * (1.0 - 0.55 * cloud) + np.array([0.96, 0.98, 1.0]) * sky_luma * (0.80 * cloud)
+        amb = sky.amb * (1.0 - 0.55 * cloud) + np.array([0.97, 0.99, 1.0]) * sky_luma * (0.80 * cloud)
+        amb = amb * (1.0 - 0.30 * storm)
         # A dense rain deck hides the solar disc and glints completely. Diffuse
         # daylight remains, instead of retaining a bright sun with disabled shadows.
-        transmission = math.exp(-3.2 * cloud) * (1. - _smoothstep(.55, .90, cloud))
+        # Scattered fair-weather cumulus barely dims the sun; a thick deck removes it.
+        transmission = math.exp(-3.2 * max(cloud - .14, 0.)) * (1. - _smoothstep(.55, .90, cloud))
         light = sky.light * transmission
         sun_i = sky.sun_intensity * transmission
-        flash = np.array([.80, .90, 1.0]) * self.lightning * (.28 * day + 65. / NITS_PER_SCENE_UNIT * night)
+        flash = np.array([.80, .88, 1.0]) * self.lightning * (.28 * (1. - night) + 65. / NITS_PER_SCENE_UNIT * night)
         amb += flash
         return replace(
             sky, sky=sky_col.astype(np.float32), fog=fog.astype(np.float32),

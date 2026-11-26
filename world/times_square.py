@@ -1,8 +1,9 @@
 """Times Square dressing: dense LED billboards, blade signs, marquees, red steps.
 
 Generated per tile in local coordinates, in the same 17-float layout as urban.py.
-Only tiles near Times Square pay for it. Screens are generic LED content (no
-brand artwork); the look comes from the neon shader's billboard pattern.
+Only tiles near Times Square pay for it. Screens pick a layer from the drop-in
+creatives in ``assets/billboards``; the neon shader falls back to procedural LED
+content when that folder is empty or cannot be decoded.
 """
 from __future__ import annotations
 
@@ -58,12 +59,31 @@ def _weight(x, y, cx, cy):
     return 1.0 if d <= CORE_R else max(0.0, 1.0 - (d - CORE_R) / (OUTER_R - CORE_R))
 
 
-def _screen(glow, solid, a, t, n, s0, s1, z0, z1, seed, tint):
-    """Framed LED panel on a facade edge."""
+def _screen(glow, solid, a, t, n, s0, s1, z0, z1, seed, tint, lift=0.):
+    """Framed LED panel on a facade edge.
+
+    The glass floats 12 cm in front of its frame (and ``lift`` further), so the depth
+    buffer never has to separate near-coplanar surfaces at street-viewing distances.
+    """
     w, h = s1 - s0, z1 - z0
     solid.edge_box(a, t, n, s0 - .35, s1 + .35, .04, .30, z0 - .35, z1 + .35, DARK)
     _quad_on_edge(glow, a, t, n, s0, s1, z0, z1, tint, 8.0, (seed, BILL, w / max(h, 1.)),
-                  out=.33, emissive=1.0)
+                  out=.42 + lift, emissive=1.0)
+
+
+def _claimed(placed, a, t, length):
+    """True if this wall run overlaps one already carrying screens.
+
+    OSM often maps a building plus its parts, or flush neighbours, with the same wall;
+    each would otherwise add its own panels in the identical plane and they z-fight.
+    """
+    run = LineString([a, a + t * length])
+    zone = run.buffer(1.6, cap_style=2)
+    for other in placed:
+        if zone.intersects(other) and zone.intersection(other).area > 3.0 * 1.6:
+            return True
+    placed.append(zone)
+    return False
 
 
 def _blade(glow, solid, a, t, n, s, z0, z1, seed, tint):
@@ -94,18 +114,20 @@ def build_times_square(buildings, proj, bbox, hf=None, paths=None):
     geoms = np.empty(len(buildings), dtype=object)
     geoms[:] = [b.footprint for b in buildings]
     btree = shapely.STRtree(geoms)
+    placed, count = [], 0
     for bi, b in enumerate(buildings):
         fp = b.footprint
         if fp is None or fp.is_empty or b.min_height > .5 or b.height < 14. or b.layer < 0:
             continue
         c = fp.centroid
         w = _weight(c.x, c.y, cx, cy)
-        if w <= 0. or _hash(b.id, 977) > .30 + .70 * w:
+        if w <= 0. or _hash(b.id, 977) > .10 + .34 * w:   # sparse: a few big screens, not a wall of them
             continue
         foundation = _ground_z(b, hf)
-        faces = _frontages(fp, tree) if w < .6 else _exposed_edges(b, bi, btree, geoms)[:4]
+        faces = _frontages(fp, tree) if w < .6 else _exposed_edges(b, bi, btree, geoms)[:2]
         for edge_id, (a, _b, t, n, length) in enumerate(faces):
             if length < 8.5: continue
+            if _hash(b.id, 55 + edge_id) > .65 or _claimed(placed, a, t, length): continue
             top = foundation + b.height - 2.0
             lo = foundation + 7.5
             if top - lo < 6.: continue
@@ -114,7 +136,7 @@ def build_times_square(buildings, proj, bbox, hf=None, paths=None):
             # stacked tiers of screens, widest first
             z = lo
             tier = 0
-            while z + 5. < reach and tier < 5:
+            while z + 5. < reach and tier < 3:
                 th = min(reach - z, 7. + 9. * _hash(b.id, 40 + tier + edge_id))
                 s = .8
                 k = 0
@@ -123,10 +145,12 @@ def build_times_square(buildings, proj, bbox, hf=None, paths=None):
                     if pw >= 5.5:
                         tint = TINTS[int(_hash(b.id, 200 + tier * 11 + k) * len(TINTS)) % len(TINTS)]
                         _screen(glow, solid, a, t, n, s, s + pw, z, z + th,
-                                _hash(b.id, 300 + tier * 13 + k + edge_id), tint)
-                    s += pw + .7
+                                _hash(b.id, 300 + tier * 13 + k + edge_id), tint,
+                                lift=.02 * (count % 5))
+                        count += 1
+                    s += pw + 1.6
                     k += 1
-                z += th + .7
+                z += th + 1.6
                 tier += 1
             # ticker band above the shopfronts
             if w > .35:

@@ -23,7 +23,6 @@ from ..vehicles.driving import DrivingController, DriveControls, PlayerCar, vehi
 from types import SimpleNamespace
 from ..peds.walker import Walker, WalkControls
 from ..peds.pedestrians import PedestrianCrowd
-from .profiler import Profiler
 from ..vehicles.driving_surface import DrivingScene, DrivingTile
 from ..vehicles.vehicle_instances import VEHICLE_NAMES, HEIGHTS, LENGTHS, WIDTHS, LEFT, RIGHT
 from ..core.config import ACCENT, CITIES, SkyClock, StreamConfig
@@ -48,6 +47,7 @@ from ..core.projection import ChunkGrid, LocalProjection, tile_bounds, tile_d2
 from ..render.renderer import Renderer, SkyState, compute_sky
 from ..render.lod import WATER_VERTEX
 from ..world.weather_system import WeatherSystem
+from ..world.live_weather import LiveWeather, local_hours
 from .staging import StagedResult, stage_result, discard_future, shutdown_staging_cleanup
 from .app_menu import MenuHost
 from dataclasses import replace as _replace
@@ -679,6 +679,10 @@ class App(MenuHost):
         self.renderer.set_aa(4)             # 4x MSAA on the scene target; F8 toggles
         self._boot(0.62, "Loading the sky and weather")
         self.weather = WeatherSystem("clear")
+        self.live_weather = LiveWeather()
+        self._live_applied = None
+        self._live_offset_on = False       # live weather borrowed the clock's UTC offset
+        self._utc_offset_saved = None      # ...and this is the offset to give back
         self.mesh_cache = MeshCache(
             cache_dir, cfg.mesh_cache,
             tag=f"d{float(getattr(fetcher, 'terrain_datum', 0.0)):.1f}")
@@ -691,7 +695,10 @@ class App(MenuHost):
         self.settings = None               # the old F1 panel; the menu's Settings pages replaced it
         self._settings_capture = False
         self.media = NowPlayingPanel(create_media_session())
-        self.show_media = True            # F7: show/hide the now-playing card
+        self.show_media = False           # F7: now-playing card is opt-in
+        self.show_stats = False           # F3: streaming / draw / fps diagnostics
+        self._hint_key = None             # hints fade out a few seconds after the mode changes
+        self._hint_t0 = 0.0
         self.minimap = MinimapPanel()     # bottom-left flat map inset
         self.navigation = NavigationController()
         self.destinations = NavigationPanel()
@@ -1184,7 +1191,6 @@ class App(MenuHost):
         if self.walker.active:
             self._walk_controls = WalkControls(float(fwd), float(side), bool(kmods & pg.KMOD_SHIFT),
                                                bool(kmods & pg.KMOD_CTRL), bool(keys[pg.K_SPACE]))
-            self._profile_held = bool(keys[pg.K_q])
             return
         driving = getattr(self, 'driving', None)
         if driving is not None and driving.active:
@@ -1269,7 +1275,7 @@ class App(MenuHost):
 
     # ------------------------------------------------------------------ on foot
     WALK_HINTS = (("W A S D", "Walk"), ("Shift", "Run"), ("Ctrl", "Stroll"), ("Space", "Jump"),
-                  ("Hold Q", "Profile"), ("Enter", "Enter car"), ("Tab", "Garage"), ("Esc", "Free flight"))
+                  ("Enter", "Enter car"), ("Tab", "Garage"), ("Esc", "Free flight"))
     CROWD_LEVELS = ((0.0, "off"), (0.35, "quiet"), (1.0, "normal"), (1.5, "packed"))
 
     def _init_walking(self):
@@ -1277,9 +1283,7 @@ class App(MenuHost):
         self.walker = Walker()
         self.crowd = PedestrianCrowd()
         self.crowd_level = 2
-        self.profiler = Profiler()
         self._walk_controls = WalkControls()
-        self._profile_held = False
         self._frame_no = 0
         self._veh_cache = (-99, None, None, None)
 
@@ -1326,11 +1330,10 @@ class App(MenuHost):
         self.show_help = self.show_log = False
         self._veh_cache = (-99, None, None, None)
         if say:
-            self._say("On foot - WASD walk, Shift run, Space jump, hold Q to profile, Enter car, Esc free-fly", 5.)
+            self._say("On foot - WASD walk, Shift run, Space jump, Enter car, Esc free flight", 5.)
 
     def _end_walking(self):
         self.walker.active = False
-        self.profiler.update(0., False)
         self._set_mouse_capture(False)
         self.renderer.motion_car = None
 
@@ -1377,10 +1380,9 @@ class App(MenuHost):
 
     def _update_walking(self, raw, active):
         walker, cam = self.walker, self.camera
-        controls, held = self._walk_controls, self._profile_held
-        self._walk_controls, self._profile_held = WalkControls(), False   # keys are re-read every frame
+        controls = self._walk_controls
+        self._walk_controls = WalkControls()   # keys are re-read every frame
         if not walker.active:
-            self.profiler.update(raw, False)
             return
         if self.mode != "scene" or self.world is None or cam is None:
             return
@@ -1393,7 +1395,6 @@ class App(MenuHost):
             near = np.hypot(rows[:, 12] - walker.position[0], rows[:, 13] - walker.position[1]) < 16.
             walker.update(raw, self.world.manager.driving_scene, controls, yaw, (rows[near], kinds[near]))
         cam.follow_walker(walker.position, walker.heading, walker.speed, height=walker.height)
-        self.profiler.update(raw, held and not paused)
         # The character moves with the camera: keep it out of the motion blur.
         p = walker.position
         self.renderer.motion_car = (float(p[0]), float(p[1]), float(p[2]) - .05, float(walker.heading),
@@ -1580,6 +1581,9 @@ class App(MenuHost):
             elif k == pg.K_F9:
                 self.show_hud = not self.show_hud
                 self._say(f"HUD {'hidden' if not self.show_hud else 'shown'}", 2.0)
+            elif k == pg.K_F3:
+                self.show_stats = not self.show_stats
+                self._say(f"Diagnostics {'on' if self.show_stats else 'off'}", 1.6)
             elif k == pg.K_F8:
                 r = self.renderer
                 r.set_aa(0 if r.aa_samples else 4)
@@ -1607,8 +1611,11 @@ class App(MenuHost):
                 self.sky_clock.toggle()
                 self._say(f"Time {'paused' if not self.sky_clock.running else 'running'}", 2.0)
             elif k == pg.K_t:
-                mode = self.weather.cycle()
-                self._say(f"Weather: {self.weather.label}", 3.0)
+                if mods & pg.KMOD_SHIFT:
+                    self.set_live_weather(not self.weather.live)
+                else:
+                    mode = self.weather.cycle()
+                    self._say(f"Weather: {self.weather.label}", 3.0)
             elif k == pg.K_i:
                 r = self.renderer
                 r.constellations_enabled = not r.constellations_enabled
@@ -1762,71 +1769,71 @@ class App(MenuHost):
     DRIVE_HINTS = (("W A S D", "Drive"), ("F6", "Directions"), ("Space", "Brake"), ("Q / E", "Signals"), ("O", "Lights"),
                    ("F", "Chase view"), ("R", "Recover"), ("Enter", "Exit"), ("Esc", "Menu"))
 
+    # Only the shortcuts that matter for the current mode, shown briefly then faded out (F1 lists all).
+    SCENE_HINTS_MIN = (("W A S D", "Fly"), ("Enter", "Drive"), ("U", "Walk"), ("F6", "Directions"), ("F1", "All shortcuts"))
+    DRIVE_HINTS_MIN = (("W A S D", "Drive"), ("Space", "Brake"), ("Enter", "Exit"), ("F1", "All shortcuts"))
+    HINT_SECONDS = 9.0
+
+    def _hint_alpha(self, key):
+        now = time.time()
+        if key != self._hint_key:
+            self._hint_key, self._hint_t0 = key, now
+        age = now - self._hint_t0
+        return max(0.0, min(1.0, (self.HINT_SECONDS - age) / 1.5))
+
     def _hud_scene(self, w, h):
         ui, M = self.ui, T.MARGIN
         sky = self._frame_sky or self.weather.effective_sky(self._sky())
         mouse = self._lm(self.pg.mouse.get_pos())
         cam = self.camera
-        sun = f"sun {math.degrees(sky.alt):+.0f}\u00b0" if sky.is_day else "night"
-        sub = f"{self.weather.label}  \u00b7  {sun}"
         coords = ""
         if self.proj:
             lat, lon = self.proj.to_latlon(cam.target[0], cam.target[1])
-            coords = f"{lat:.4f}, {lon:.4f}"     # 5 decimals changed every frame -> a new text texture each frame
+            coords = f"{lat:.4f}, {lon:.4f}"
         az = cam.azimuth if cam is not None else 0.0
+        # one quiet line under the clock: conditions, plus a dot when they are live
+        sub = self.weather.label + ("  \u00b7  live" if self.weather.live else "")
+        if not self.sky_clock.running:
+            sub += "  \u00b7  paused"
         self.chrome.draw_scene_ui(ui, w, h, mouse, self.label or "Scene", coords, sky.stamp, sub,
                                   self.typing, self.query, self.pg.display.is_fullscreen(),
                                   (math.cos(az), math.sin(az)))
-        # state chips under the time card (only what is actually unusual)
-        chips = []
-        if cam is not None:
-            if self.driving.active: chips.append((f"Driving {VEHICLE_NAMES[self.driving.car.kind].lower()}", T.TEXT))
-            elif self.walker.active: chips.append(("On foot", T.TEXT))
-            elif cam.mode == cam.FLY: chips.append((f"Free-fly {cam.speed:.0f} m/s", T.TEXT))
-            elif cam.focused: chips.append(("Focus orbit", T.TEXT))
-        if not self.sky_clock.running: chips.append(("Paused", T.WARN))
-        if not sky.shadows: chips.append(("No shadows", T.TEXT_2))
-        if self.weather.wetness > 0.05: chips.append((f"Wet {int(self.weather.wetness * 100)}%", T.TEXT_2))
-        if sky.moon_intensity > 0.05: chips.append((f"Moon {int(sky.moon_phase * 100)}%", T.TEXT_2))
-        chips.append((str(sky.date), T.TEXT_3))
-        self.chrome.chips(ui, w - M - self.chrome.BTN - 12, M + 56 + 8, chips, min_x=M + 220)
-        self._hud_media(w, h)
-        # bottom row: status card on the left, key hints beside it
+        # bottom-left: streaming progress only while something is loading, full diagnostics on F3
         rows = []
         st = self.world.manager.stats() if self.world else None
-        if st:
-            busy = st["queued"] + st["loading"]
-            # rounded: every distinct string is rasterised into its own cached texture
-            lit = int(round(self.renderer.lights.count / 100.0)) * 100
+        busy = (st["queued"] + st["loading"]) if st else 0
+        if st and (self.show_stats or busy):
             head = f"{st['resident']} chunks"
             if busy: head += f"  \u00b7  {busy} streaming"
             if st["failed"]: head += f"  \u00b7  {st['failed']} retrying"
             rows.append((head, T.TEXT, T.T_BODY, "semibold"))
-            rows.append((f"{st['vram_mb']:.0f} MB  \u00b7  {self.renderer.last_drawn} drawn"
-                         + (f"  \u00b7  {lit} lights" if lit else ""), T.TEXT_3, T.T_SMALL, "medium"))
-        else:
-            busy = 0
-        if self.world and getattr(self.world, 'traffic_sim', None) is not None:
-            rows.append((_traffic_status_text(self._traffic_status), T.TEXT_3, T.T_SMALL, "regular"))
+            if self.show_stats:
+                lit = int(round(self.renderer.lights.count / 100.0)) * 100
+                rows.append((f"{st['vram_mb']:.0f} MB  \u00b7  {self.renderer.last_drawn} drawn"
+                             + (f"  \u00b7  {lit} lights" if lit else "") + f"  \u00b7  {self.fps} fps",
+                             T.TEXT_3, T.T_SMALL, "medium"))
+                if self.world and getattr(self.world, 'traffic_sim', None) is not None:
+                    rows.append((_traffic_status_text(self._traffic_status), T.TEXT_3, T.T_SMALL, "regular"))
         cw = 0
         status_h = 0.0
         if rows:
             prog = (st["resident"] / max(1, st["resident"] + busy)) if (st and busy) else None
             cw, status_h = self.chrome.status_card(ui, M, h - M, rows, progress=prog,
-                                                   shimmer=time.time(), min_w=200)
-        hx = M + cw + (12 if cw else 0)
-        items = (self.DRIVE_HINTS if self.driving.active else
-                 self.WALK_HINTS if self.walker.active else self.SCENE_HINTS)
+                                                   shimmer=time.time(), min_w=180)
+        # bottom centre: a faint hint line that disappears on its own
         if self.show_hints:
-            self.chrome.hint_bar(ui, hx, h - M - 36, w - hx - (M + self.chrome.BTN + 12), items)
+            drive = self.driving.active
+            walk = self.walker.active
+            fade = self._hint_alpha("drive" if drive else "walk" if walk else "fly")
+            if fade > 0.01:
+                items = (self.DRIVE_HINTS_MIN if drive else self.WALK_HINTS if walk else self.SCENE_HINTS_MIN)
+                self.chrome.hint_bar(ui, 0, h - M - 36, w, items, fade=fade, center=True)
         if self.show_minimap:
             self._hud_minimap(w, h, mouse, status_h)
         else:
             self.minimap.clear()
         if self.driving.active:
             self._hud_driving(w, h)
-        if self.walker.active and self.camera is not None:
-            self.profiler.draw(ui, w, h, self.camera, self.crowd, self.camera.position)
         anchor = self._navigation_anchor()
         if anchor is not None:
             self.destinations.draw(ui, w, h, mouse, self.navigation,
@@ -1870,7 +1877,7 @@ class App(MenuHost):
                  "Right signal" if car.indicator == RIGHT else "Enter to park / exit")
         sig = -1 if car.indicator == LEFT else 1 if car.indicator == RIGHT else 0
         x = w - M - 236
-        y = h - M - 2 * self.chrome.BTN - 12 - 124
+        y = h - M - 124
         self.chrome.speed_card(ui, x, y, VEHICLE_NAMES[car.kind], shown, car.gear, state, sig,
                                bool(car.braking), kmh / 180.0, unit="mph" if mph else "km/h")
 
@@ -1887,7 +1894,7 @@ class App(MenuHost):
                      ("F / Wheel", "chase view / distance"), ("R / Esc", "recover / exit"))),
         ("On foot", (("U", "walk / return to free flight"), ("WASD", "walk (camera-relative)"),
                      ("Shift / Ctrl", "run / stroll"), ("Space", "jump"), ("Mouse", "look around"),
-                     ("Hold Q", "profile people in view"), ("Enter", "enter a nearby car"),
+                     ("Enter", "enter a nearby car"),
                      ("J", "crowd: off / quiet / normal / packed"), ("Esc", "free flight"))),
         ("Navigation", (("F6", "nearby destinations / directions"), ("M", "map / scene"),
                         ("/", "world search"), ("1 - 0", "cities"),
@@ -1898,8 +1905,8 @@ class App(MenuHost):
                      ("F11", "full screen"))),
         ("Media", (("F7", "now-playing card"), ("Click", "play / pause / skip"))),
         ("World", (("K / L", "time - / +"), ("P", "pause time"), ("T", "weather"),
-                   ("I", "constellations"), ("N", "lens flare"), ("H", "eye adaptation"),
-                   ("G", "reflections"))),
+                   ("Shift + T", "live weather"), ("I", "constellations"), ("N", "lens flare"),
+                   ("H", "eye adaptation"), ("G", "reflections"))),
         ("Debug", (("F2", "streaming log"), ("Esc", "close panels"))),
     )
 
@@ -2003,8 +2010,8 @@ class App(MenuHost):
             self.fade -= dt / 1.2
         if self.loading and self.world is not None:
             self._hud_loading(w, h)
-        if self.show_fps and self.fps:
-            ui.text(f"{self.fps} fps", w - T.MARGIN, h - T.MARGIN - 2 * self.chrome.BTN - 40, T.T_SMALL, T.TEXT_2,
+        if self.show_fps and self.fps and not self.show_stats:
+            ui.text(f"{self.fps} fps", w - T.MARGIN, h - T.MARGIN - 16, T.T_SMALL, T.TEXT_2,
                     anchor="right", weight="semibold")
         if self.show_log: self._hud_log(w, h)
         msg, until = self.message
@@ -2053,6 +2060,81 @@ class App(MenuHost):
         self.map.set_scale(S)
         self.map.set_size(w / S, h / S)
 
+    # ------------------------------------------------------------ live weather
+    def _here_latlon(self):
+        """Where the camera is looking, in degrees, or ``None`` before a city loads."""
+        if self.proj is None or self.camera is None:
+            return None
+        try:
+            target = self.camera.target if self.camera.mode != self.camera.FLY else self.camera.position
+            return self.proj.to_latlon(float(target[0]), float(target[1]))
+        except Exception:
+            return None
+
+    def _sync_live_clock(self, state):
+        """Point the sky clock at the observed place's real local time.
+
+        Live weather means today's sky, not just today's clouds: the clock is
+        held to the location's wall-clock time (shortest-way round, so a jump to
+        another time zone does not spin the sun the long way round).  Turning
+        live weather off leaves the clock running from wherever it ended up.
+        """
+        offset = (state or {}).get("utc_offset")
+        hours = local_hours(offset)
+        if hours is None:
+            return
+        # Civil local time needs the place's real offset, otherwise the sky is
+        # computed for local mean solar time (up to an hour out at zone edges).
+        if not self._live_offset_on:
+            self._utc_offset_saved = self.utc_offset
+            self._live_offset_on = True
+        self.utc_offset = float(offset) / 3600.0
+        delta = (hours - self.sky_clock.hours + 12.0) % 24.0 - 12.0
+        if abs(delta) >= 1.0 / 3600.0:              # ignore sub-second churn
+            self.sky_clock.shift(delta)
+
+    def _live_weather_tick(self):
+        """Keep the live feed pointed at the camera and apply each new observation once."""
+        if not self.weather.live:
+            return
+        here = self._here_latlon()
+        if here is None:
+            return
+        self.live_weather.request(*here)
+        state = self.live_weather.state
+        if state is None:
+            return
+        self._sync_live_clock(state)
+        if state.get("stamp") != self._live_applied:
+            self.weather.apply_live(state)
+            self._live_applied = state.get("stamp")
+
+    def set_live_weather(self, on):
+        """Toggle real reported conditions for the place on screen."""
+        on = bool(on)
+        if not on:
+            self._live_applied = None
+            self.weather.clear_live()
+            if self._live_offset_on:
+                self.utc_offset = self._utc_offset_saved
+                self._live_offset_on = False
+            self._say("Manual weather", 2.4)
+            return
+        here = self._here_latlon()
+        if here is None:
+            self._say("Load a city before switching to live weather", 3.0)
+            return
+        self.live_weather.request(*here, force=True)
+        state = self.live_weather.state
+        if state is not None:
+            self.weather.apply_live(state)
+            self._live_applied = state.get("stamp")
+            self._sync_live_clock(state)
+            self._say(f"Live weather \u00b7 {self.weather.label} \u00b7 {self.sky_clock.stamp} local", 3.0)
+        else:
+            self.weather.live = True
+            self._say("Live weather \u00b7 fetching current conditions\u2026", 3.0)
+
     def _render(self, dt):
         w, h = self.pg.display.get_window_size()
         lw, lh = w / self.ui_scale, h / self.ui_scale
@@ -2063,6 +2145,7 @@ class App(MenuHost):
             self._draw_city_loading(lw, lh)
         elif self.mode == "scene":
             if self.world is not None:
+                self._live_weather_tick()
                 self.weather.update(dt)
                 sky = self._frame_sky = self.weather.effective_sky(self._sky())
                 if not self.city_shadows and sky.shadows:
@@ -2199,6 +2282,7 @@ class App(MenuHost):
             self.audio.close()
         self.renderer.spill.close()
         self.renderer.release_vegetation()
+        self.renderer.release_billboards()
         self.renderer.release_shadows()
         self.renderer.release_weather()
         self.renderer.release_water_texture()

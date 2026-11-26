@@ -23,8 +23,8 @@ after ``opaque_count`` hold transmissive lamp covers/windows at every LOD.
 """
 import numpy as np
 
-SEDAN, SUV, COMPACT, BUS, TRUCK, TAXI, VAN, GARBAGE, PICKUP, X1 = range(10)
-KINDS = 10
+SEDAN, SUV, COMPACT, BUS, TRUCK, TAXI, VAN, PICKUP, X1 = range(9)
+KINDS = 9
 
 GLASS = (0.03, 0.04, 0.05)
 TYRE = (0.025, 0.025, 0.027)
@@ -451,57 +451,6 @@ def _van(m):
     return 5.6
 
 
-def _cab_truck(m, cab_x, cab_len, col_part, cab_h, hw, wr, hood=False):
-    x0, x1 = cab_x - cab_len / 2, cab_x + cab_len / 2
-    sec = [(x0, .55, cab_h - 0.12, hw * 0.92), (x0 + 0.06, .50, cab_h, hw),
-           (x1 - 0.30, .50, cab_h, hw), (x1 - 0.04, .52, cab_h - 0.06, hw * 0.97),
-           (x1, .56, cab_h - 0.30, hw * 0.90)]
-    return _Body(m, sec, WHITE_BODY if col_part == 8 else ONE, col_part, n=14, expo=6.5)
-
-
-def _box_truck(m, garbage=False):
-    L, W, wr = (8.0, 2.45, 0.46) if garbage else (7.5, 2.35, 0.44)
-    hw = W / 2
-    cab_x, cab_len = L * 0.32, L * 0.26
-    cab = _cab_truck(m, cab_x, cab_len, 0 if not garbage else 8, 2.95, hw, wr)
-    x_f = cab_x + cab_len / 2
-    # windshield + door windows
-    m.quad((x_f + 0.004, -hw * 0.80, 2.62), (x_f + 0.004, hw * 0.80, 2.62),
-           (x_f + 0.004, hw * 0.80, 1.60), (x_f + 0.004, -hw * 0.80, 1.60), GLASS, 1, hint=(1, 0, 0))
-    m.box(x_f + 0.004, 0, 2.66, 0.02, hw * 1.7, 0.07, TRIM, 6)
-    for s in (-1, 1):
-        _side_window(m, cab, s, cab_x - 0.75, x_f - 0.18, 1.62, 2.62)
-        _seam(m, cab, cab_x - 0.82, 0.7, 2.7, s)
-        _wheel(m, cab, cab_x + 0.35, wr, wr, 0.16, s)
-    # cargo / hopper body
-    if garbage:
-        m.box(-L * 0.12, 0, 1.55, L * 0.62, W * 0.98, 2.30, WHITE_BODY, 8)
-        m.box(-L * 0.12, 0, 2.77, L * 0.60, W * 0.90, 0.22, (0.14, 0.40, 0.20), 8)
-        m.box(-L * 0.12, 0, 0.62, L * 0.62, W * 0.9, 0.18, TRIM, 6)
-        m.box(-L * 0.43, 0, 1.45, 0.16, W * 0.9, 1.7, (0.18, 0.42, 0.22), 8)
-    else:
-        m.box(-L * 0.14, 0, 1.75, L * 0.58, W * 0.98, 2.55, WHITE_BODY, 8)
-        m.box(-L * 0.14, 0, 0.62, L * 0.58, W * 0.90, 0.14, TRIM, 6)
-        m.box(-L * 0.14, 0, 3.05, L * 0.58, W * 0.99, 0.06, (0.80, 0.80, 0.78), 8)
-    # chassis, bumpers, wheels, lights
-    m.box(-0.2, 0, 0.58, L * 0.80, W * 0.62, 0.20, TRIM, 6)
-    m.box(x_f + 0.04, 0, 0.62, 0.14, W * 0.98, 0.26, TRIM, 6)
-    m.box(x_f + 0.01, 0, 1.18, 0.05, W * 0.62, 0.50, TRIM, 6)                          # grille
-    for s in (-1, 1):
-        m.box(x_f - 0.04, s * hw * 0.78, 1.00, 0.10, 0.30, 0.22, HEAD, 3)
-        m.box(-L * 0.5 + 0.02, s * hw * 0.78, 0.82, 0.08, 0.22, 0.30, TAIL, 4)
-        part = P_LEFT if s > 0 else P_RIGHT
-        m.box(x_f + .02, s * hw * .78, .84, .06, .24, .075, AMBER, part)
-        m.box(-L * .5 - .025, s * hw * .78, .64, .06, .20, .075, AMBER, part)
-        for ax in (-L * 0.30, -L * 0.40):
-            yy = hw * 0.90
-            _wheel(m, None, ax, wr, wr, .17, s, center_y=yy)
-    m.box(-L * 0.5 - 0.02, 0, 0.62, 0.12, W * 0.9, 0.18, TRIM, 6)
-    _plate(m, x_f + 0.12, 0, 0.60, 1); _plate(m, -L * 0.5 - 0.09, 0, 0.66, -1)
-    _mirrors(m, x_f - 0.55, hw + 0.15, 2.35)
-    return L
-
-
 def _bus(m):
     L, W, wr = 11.0, 2.55, 0.50
     sec = [(-5.50, .55, 3.00, 1.10), (-5.42, .42, 3.12, 1.26), (-4.0, .38, 3.20, 1.28),
@@ -540,10 +489,8 @@ def build_template(kind):
     elif kind in (SEDAN, TAXI, PICKUP, VAN, COMPACT, BUS, TRUCK, X1):  # reference fleet (COMPACT = supplied 2012 Prius)
         from .vehicle_reference import build_reference
         build_reference(m, kind)
-    elif kind == GARBAGE:
-        _box_truck(m, garbage=True)
     else:
-        _box_truck(m, garbage=False)
+        raise ValueError(f'unknown vehicle kind {kind}')
 
     # translucent ground-glow quads (night headlight pools) - must stay last
     for (x0, x1, y) in ((2.5, 7.0, 3.0), (3.0, 11.0, 1.5)):
